@@ -109,7 +109,8 @@ elif view=='admin':
   st.markdown(f"<div class='revcard'><div class='revgrid'><div><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b><br>Próxima revisão: <b>{km(target) if target else '—'}</b></div></div><div class='remain {cls}'>KM PARA REVISÃO<b>{rem}</b></div></div></div>",unsafe_allow_html=True)
   olddate=v.get('data_ultima_revisao'); parsed=dt(olddate) if olddate else None; default_date=parsed.date() if parsed else datetime.now(TZ).date()
   with st.form('adminrev'):
-   d=st.date_input('Data da última revisão',value=default_date); kr=st.number_input('KM da última revisão',min_value=0,value=int(v.get('km_ultima_revisao') or v.get('km_atual') or 0),step=1); st.caption(f'Próxima revisão: {km(int(kr)+10000)}'); save=st.form_submit_button('💾 SALVAR / CORRIGIR ÚLTIMA REVISÃO')
+   revision_km_value = int(v.get('km_atual') or 0) if v.get('km_ultima_revisao') is None else int(v.get('km_ultima_revisao'))
+   d=st.date_input('Data da última revisão',value=default_date); kr=st.number_input('KM da última revisão',min_value=0,value=revision_km_value,step=1); st.caption(f'Próxima revisão: {km(int(kr)+10000)}'); save=st.form_submit_button('💾 SALVAR / CORRIGIR ÚLTIMA REVISÃO')
   if save:
    DB.table('veiculos').update({'data_ultima_revisao':d.isoformat(),'km_ultima_revisao':int(kr),'intervalo_revisao':10000,'atualizado_em':now()}).eq('placa',v['placa']).execute(); st.success('Última revisão atualizada.'); st.rerun()
  elif tab=='historico':
