@@ -3,138 +3,94 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from PIL import Image
 from supabase import create_client
-import base64, io
+import base64, io, html
 
-st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='wide', initial_sidebar_state='collapsed')
-BASE = Path(__file__).parent
-ASSETS = BASE / 'assets'
-TZ_BR = timezone(timedelta(hours=-3))
-
+st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
+BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
 @st.cache_resource
-def get_db():
-    return create_client(st.secrets['SUPABASE_URL'], st.secrets['SUPABASE_KEY'])
-
-db = get_db()
-
-def img64(fname):
-    p = ASSETS / fname
-    im = Image.open(p).convert('RGBA'); im.thumbnail((720, 520))
-    b = io.BytesIO(); im.save(b, 'PNG', optimize=True)
-    return base64.b64encode(b.getvalue()).decode()
-
-def fmtkm(v): return f"{int(v or 0):,}".replace(',', '.') + ' km'
-def iso_agora(): return datetime.now(TZ_BR).isoformat()
-def fmt_datahora(valor):
-    if not valor: return '—'
-    try: return datetime.fromisoformat(valor.replace('Z', '+00:00')).astimezone(TZ_BR).strftime('%d/%m/%Y %H:%M')
-    except Exception: return str(valor)
-
-def dados():
-    vs = db.table('veiculos').select('*').order('placa').execute().data or []
-    movs = db.table('movimentacoes').select('*').eq('status', 'EM USO').order('data_hora_saida', desc=True).execute().data or []
-    return vs, {m['placa']: m for m in movs}
+def db(): return create_client(st.secrets['SUPABASE_URL'],st.secrets['SUPABASE_KEY'])
+DB=db()
+def e(x): return html.escape(str(x or ''))
+def nowiso(): return datetime.now(TZ).isoformat()
+def km(x): return f"{int(x or 0):,}".replace(',','.')+' km'
+def dt(x,only_time=False):
+    try:
+        d=datetime.fromisoformat(str(x).replace('Z','+00:00')).astimezone(TZ); return d.strftime('%H:%M' if only_time else '%d/%m/%Y %H:%M')
+    except: return '—'
+def elapsed(x):
+    try:
+        d=datetime.fromisoformat(str(x).replace('Z','+00:00')).astimezone(TZ); m=max(0,int((datetime.now(TZ)-d).total_seconds()//60)); return f'{m//60}h {m%60:02d}min' if m>=60 else f'{m}min'
+    except: return '—'
+def b64(name):
+    im=Image.open(ASSETS/name).convert('RGBA'); im.thumbnail((620,420)); out=io.BytesIO(); im.save(out,'PNG',optimize=True); return base64.b64encode(out.getvalue()).decode()
+def load():
+    v=DB.table('veiculos').select('*').order('placa').execute().data or []
+    m=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
+    return v,{x['placa']:x for x in m}
+def rev(v):
+    if v.get('km_ultima_revisao') is None:return None,None,0
+    ini=int(v['km_ultima_revisao']); prox=ini+int(v.get('intervalo_revisao') or 10000); atual=int(v.get('km_atual') or 0); pct=max(0,min(100,round((atual-ini)/(prox-ini)*100))) if prox>ini else 100
+    return prox,prox-atual,pct
 
 st.markdown('''<style>
-#MainMenu,footer,header{visibility:hidden}.stApp{background:#f5f8fc;color:#0c315d}.block-container{padding:1rem 1rem 4rem;max-width:1180px}
-.hero{display:flex;align-items:center;gap:12px;margin:2px 0 18px}.brand{font-size:28px;font-weight:900;color:#073b70}.sub{font-size:13px;color:#536b86}
-.card{background:white;border:1px solid #dce6f0;border-radius:16px;overflow:hidden;box-shadow:0 3px 12px #0d3b6610;margin-bottom:14px}.photo{display:block;height:260px;width:100%!important;max-width:none!important;object-fit:contain;object-position:center center;margin:0!important;padding:8px!important;background:#fff!important}.pad{padding:14px}.plate{font-size:24px;font-weight:900;color:#0a3765}.model{font-weight:700}.company{font-size:13px;color:#60758c;margin-bottom:10px}.status{display:inline-block;padding:6px 10px;border-radius:20px;font-size:12px;font-weight:900}.ok{background:#dff7e9;color:#08783b}.busy{background:#fff0df;color:#d86500}.meta{font-size:14px;line-height:1.75;color:#203d5d}.rev{background:#f1f6fb;border-radius:10px;padding:9px;margin-top:8px}.tiny{font-size:12px;color:#6b7e92}.formcar{max-width:560px;margin:auto}.formcar img{max-height:210px;object-fit:contain}
-@media(max-width:640px){.block-container{padding:.55rem .55rem 3rem}.hero{margin-top:0}.brand{font-size:20px}.sub{font-size:12px}.photo{height:160px}.plate{font-size:20px}.stButton button{min-height:48px;font-weight:800;border-radius:12px}}
-</style>''', unsafe_allow_html=True)
+#MainMenu,footer,header,[data-testid="stToolbar"]{display:none!important}.stApp{background:#f3f7fb}.block-container{max-width:470px;padding:.65rem .65rem 5rem!important}.stButton>button{border-radius:9px;min-height:42px;font-weight:800;border:1px solid #d8e2ec}.top{display:flex;align-items:center;gap:9px;margin:2px 2px 12px}.logo{font-size:25px}.brand{font-size:20px;line-height:1;font-weight:950;color:#063c70}.brand small{display:block;font-size:9px;font-weight:700;margin-top:5px;color:#536b82}.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 12px}.tab{padding:11px;border-radius:8px;text-align:center;font-size:13px;font-weight:850;background:#e8eef5;color:#153e65}.tab.on{background:#0868bd;color:white}.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.car{background:white;border:1px solid #dbe5ef;border-radius:12px;overflow:hidden;box-shadow:0 2px 7px #173c5f10;margin-bottom:4px}.picwrap{height:128px;position:relative;background:#fff;display:flex;align-items:center;justify-content:center}.pic{width:100%;height:100%;object-fit:contain;padding:3px}.badge{position:absolute;right:6px;top:6px;border-radius:12px;padding:4px 7px;font-size:9px;font-weight:950;color:white}.green{background:#16a765}.orange{background:#f47b20}.body{padding:8px}.plate{font-size:17px;font-weight:950;color:#093c70;line-height:1.05}.model{font-size:10px;font-weight:850;color:#244a70;margin-top:3px}.company{font-size:9px;color:#75889b;margin-bottom:8px}.line{font-size:10px;color:#24425e;line-height:1.7}.line b{color:#0b3d69}.progress{height:6px;background:#e6edf3;border-radius:8px;overflow:hidden;margin:5px 0 1px}.bar{height:100%;background:#10b777;border-radius:8px}.pctl{font-size:8px;text-align:right;color:#647b90}.action{margin-top:7px;padding:9px 3px;text-align:center;border-radius:7px;font-size:9px;font-weight:950;color:white;background:#0765ae}.action.ret{background:#fff0e4;color:#e46c13}.formhead{display:flex;align-items:center;justify-content:space-between;color:#083d70;font-weight:950;font-size:17px;margin:5px 0 10px}.formhero{background:white;border-radius:12px;border:1px solid #dce6ef;overflow:hidden;margin-bottom:10px}.formhero img{width:100%;height:205px;object-fit:contain}.summary{display:grid;grid-template-columns:1.5fr 1fr;background:#eef7ff;padding:9px}.summary .plate{font-size:18px}.sumright{font-size:9px;color:#567087}.fieldnote{font-size:10px;color:#61798e}.returnbox{background:white;border:1px solid #dbe5ef;border-radius:12px;padding:10px}.returncar{display:flex;gap:9px;align-items:center;background:#edf7ff;border-radius:9px;padding:7px}.returncar img{width:95px;height:65px;object-fit:contain}.twostat{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.stat{background:#f2f7fb;border-radius:8px;text-align:center;padding:9px;color:#36536d;font-size:10px}.stat b{display:block;color:#087653;font-size:14px}.desktopnav{margin-bottom:8px}
+@media(min-width:700px){.block-container{max-width:980px}.picwrap{height:220px}.plate{font-size:22px}.model,.line{font-size:13px}.company{font-size:11px}.action{font-size:12px}.brand{font-size:26px}}
+</style>''',unsafe_allow_html=True)
+st.markdown("<div class='top'><div class='logo'>🔧</div><div class='brand'>10 SUL <small>CONTROLE DE VEÍCULOS · SERVICE</small></div></div>",unsafe_allow_html=True)
+try: vehicles,openm=load()
+except Exception as ex: st.error('Falha ao conectar ao banco online.');st.caption(str(ex));st.stop()
 
-st.markdown("<div class='hero'><div style='font-size:34px'>🔧</div><div><div class='brand'>10 SUL · CONTROLE DE VEÍCULOS</div><div class='sub'>SERVICE · saída, retorno e revisão preventiva</div></div></div>", unsafe_allow_html=True)
-page = st.segmented_control('Navegação', ['🚙 Veículos', '📊 Painel', '⚙️ Admin'], default='🚙 Veículos', label_visibility='collapsed')
-try: vs, abertas = dados()
-except Exception as e:
-    st.error('Não foi possível conectar ao banco online. Confira os Secrets da aplicação.'); st.caption(str(e)); st.stop()
-
-if page == '🚙 Veículos':
-    placa_saida = st.session_state.get('form_saida')
-    placa_retorno = st.session_state.get('form_retorno')
-
-    # Tela exclusiva de saída: abre imediatamente após tocar no botão.
-    if placa_saida:
-        v = next((x for x in vs if x['placa'] == placa_saida), None)
-        if not v or placa_saida in abertas:
-            st.session_state.pop('form_saida', None); st.rerun()
-        if st.button('← VOLTAR AOS VEÍCULOS', use_container_width=True):
-            st.session_state.pop('form_saida', None); st.rerun()
-        st.markdown("<div class='formcar'>", unsafe_allow_html=True)
-        st.subheader(f'Registrar Saída · {placa_saida}')
-        st.image(str(ASSETS / v['foto']), use_container_width=True)
-        st.caption(f"{v['modelo']} · KM atual: {fmtkm(v.get('km_atual'))}")
-        with st.form('saida'):
-            destino = st.text_input('📍 Para onde está indo?', placeholder='Ex.: Suzano, Centro, fornecedor...')
-            pessoas = st.text_input('👥 Quem está indo?', placeholder='Nome(s) de quem está no veículo')
-            km = st.number_input('🔢 KM inicial', min_value=0, step=1, value=int(v.get('km_atual') or 0))
-            st.caption('🕐 Data e hora da saída serão registradas automaticamente.')
-            ok = st.form_submit_button('🚙 REGISTRAR SAÍDA', use_container_width=True)
-        if ok:
-            if not destino.strip() or not pessoas.strip(): st.error('Informe o destino e quem está indo.')
-            elif int(km) < int(v.get('km_atual') or 0): st.error('O KM inicial não pode ser menor que o KM atual do veículo.')
-            else:
-                try:
-                    db.table('movimentacoes').insert({'placa': placa_saida,'destino':destino.strip(),'pessoas':pessoas.strip(),'km_inicial':int(km),'data_hora_saida':iso_agora(),'status':'EM USO'}).execute()
-                    db.table('veiculos').update({'km_atual':int(km),'atualizado_em':iso_agora()}).eq('placa',placa_saida).execute()
-                    st.session_state.pop('form_saida',None); st.success('Saída registrada com sucesso.'); st.rerun()
-                except Exception: st.error('Não foi possível registrar. O veículo pode já estar em uso.')
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Tela exclusiva de retorno.
-    elif placa_retorno:
-        a = abertas.get(placa_retorno)
-        v = next((x for x in vs if x['placa'] == placa_retorno), None)
-        if not a or not v:
-            st.session_state.pop('form_retorno',None); st.rerun()
-        if st.button('← VOLTAR AOS VEÍCULOS', use_container_width=True):
-            st.session_state.pop('form_retorno',None); st.rerun()
-        st.markdown("<div class='formcar'>", unsafe_allow_html=True)
-        st.subheader(f'Registrar Retorno · {placa_retorno}')
-        st.image(str(ASSETS / v['foto']), use_container_width=True)
-        st.info(f"📍 {a['destino']}\n\n👥 {a['pessoas']}\n\n🕐 Saída: {fmt_datahora(a['data_hora_saida'])}\n\n🔢 KM inicial: {fmtkm(a['km_inicial'])}")
-        with st.form('retorno'):
-            kf = st.number_input('🔢 KM final', min_value=int(a['km_inicial']), step=1, value=int(a['km_inicial']))
-            st.metric('KM rodado', fmtkm(int(kf)-int(a['km_inicial'])))
-            ok = st.form_submit_button('✓ CONFIRMAR RETORNO', use_container_width=True)
-        if ok:
-            db.table('movimentacoes').update({'km_final':int(kf),'data_hora_retorno':iso_agora(),'status':'DEVOLVIDO'}).eq('id',a['id']).execute()
-            db.table('veiculos').update({'km_atual':int(kf),'atualizado_em':iso_agora()}).eq('placa',placa_retorno).execute()
-            st.session_state.pop('form_retorno',None); st.success('Retorno registrado com sucesso.'); st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    else:
-        filtro = st.segmented_control('Status', ['Disponíveis','Em uso'], default='Disponíveis', label_visibility='collapsed')
-        lista = [v for v in vs if (v['placa'] not in abertas) == (filtro == 'Disponíveis')]
-        if not lista: st.info('Nenhum veículo nesta situação.')
-        cols = st.columns(2)
-        for i,v in enumerate(lista):
+mode=st.session_state.get('screen','home')
+if mode=='home':
+    page=st.segmented_control('Área',['🚙 Veículos','📊 Painel','⚙️ Admin'],default='🚙 Veículos',label_visibility='collapsed')
+    if page=='🚙 Veículos':
+        av=sum(1 for v in vehicles if v['placa'] not in openm); busy=len(openm)
+        filt=st.segmented_control('Situação',[f'🚗 Disponíveis ({av})',f'🚙 Em uso ({busy})'],default=f'🚗 Disponíveis ({av})',label_visibility='collapsed')
+        wantbusy='Em uso' in filt; lst=[v for v in vehicles if (v['placa'] in openm)==wantbusy]
+        if not lst: st.info('Nenhum veículo nesta situação.')
+        cols=st.columns(2,gap='small')
+        for i,v in enumerate(lst):
+            a=openm.get(v['placa']); prox,falta,pct=rev(v); badge='EM USO' if a else 'DISPONÍVEL'; bc='orange' if a else 'green'
+            info=(f"<div class='line'>👤 <b>{e(a['pessoas'])}</b><br>📍 {e(a['destino'])}<br>◷ Saída: {dt(a['data_hora_saida'],True)}<br>⌛ {elapsed(a['data_hora_saida'])} em uso<br>🚗 KM inicial: {km(a['km_inicial'])}</div>" if a else f"<div class='line'>🚗 KM atual: <b>{km(v.get('km_atual'))}</b><br>🔧 Próxima revisão: <b>{km(prox) if prox else 'não cadastrada'}</b></div>")
+            prog=(f"<div class='progress'><div class='bar' style='width:{pct}%'></div></div><div class='pctl'>{pct}%</div>" if prox else '')
             with cols[i%2]:
-                aberto=abertas.get(v['placa']); status='EM USO' if aberto else 'DISPONÍVEL'; cls='busy' if aberto else 'ok'
-                prox=(int(v['km_ultima_revisao'])+int(v.get('intervalo_revisao') or 10000)) if v.get('km_ultima_revisao') is not None else None
-                falta=prox-int(v.get('km_atual') or 0) if prox is not None else None
-                extra=f"<div class='meta'>👤 {aberto['pessoas']}<br>📍 {aberto['destino']}<br>🕐 Saída: {fmt_datahora(aberto['data_hora_saida'])}<br>🔢 KM inicial: {fmtkm(aberto['km_inicial'])}</div>" if aberto else ''
-                rev=f"Próxima revisão: <b>{fmtkm(prox)}</b>" if prox else 'Revisão ainda não cadastrada'
-                st.markdown(f"<div class='card'><img class='photo' src='data:image/png;base64,{img64(v['foto'])}'><div class='pad'><span class='status {cls}'>{status}</span><div class='plate'>{v['placa']}</div><div class='model'>{v['modelo']}</div><div class='company'>{v['empresa']}</div><div class='meta'>🚗 KM atual: <b>{fmtkm(v.get('km_atual'))}</b></div><div class='rev'>🔧 {rev}"+(f"<br><span class='tiny'>Faltam {fmtkm(max(falta,0))}</span>" if falta is not None else '')+f"</div>{extra}</div></div>",unsafe_allow_html=True)
-                if not aberto:
-                    if st.button('➜ USAR ESTE VEÍCULO',key='use'+v['placa'],use_container_width=True): st.session_state.form_saida=v['placa']; st.rerun()
-                else:
-                    if st.button('↩ REGISTRAR RETORNO',key='ret'+v['placa'],use_container_width=True): st.session_state.form_retorno=v['placa']; st.rerun()
-
-elif page == '📊 Painel':
-    st.subheader('Acompanhamento em tempo real')
-    c1,c2,c3=st.columns(3); c1.metric('Total',len(vs)); c2.metric('Disponíveis',len(vs)-len(abertas)); c3.metric('Em uso',len(abertas))
-    if st.button('↻ Atualizar painel',use_container_width=True): st.rerun()
-    for v in vs:
-        a=abertas.get(v['placa']); prox=int(v['km_ultima_revisao'])+10000 if v.get('km_ultima_revisao') is not None else None
-        with st.container(border=True):
-            x,y=st.columns([1,2]); x.image(str(ASSETS/v['foto']),use_container_width=True); y.markdown(f"### {v['placa']} · {v['modelo']}")
-            y.write(('🟠 **EM USO**' if a else '🟢 **DISPONÍVEL**')+f"  \nKM atual: **{fmtkm(v.get('km_atual'))}**")
-            if prox: y.write(f"Próxima revisão: **{fmtkm(prox)}** · faltam **{fmtkm(max(prox-int(v.get('km_atual') or 0),0))}**")
-            if a: y.write(f"👤 {a['pessoas']}  \n📍 {a['destino']}  \n🕐 {fmt_datahora(a['data_hora_saida'])}")
-else:
-    st.subheader('Cadastro de revisão preventiva')
-    placa=st.selectbox('Veículo',[v['placa'] for v in vs]); v=next(x for x in vs if x['placa']==placa)
-    with st.form('rev'):
-        data=st.date_input('Data da última revisão'); kmr=st.number_input('KM da última revisão',min_value=0,step=1,value=int(v.get('km_ultima_revisao') or v.get('km_atual') or 0))
-        st.info(f'Próxima revisão será em {fmtkm(int(kmr)+10000)}')
-        if st.form_submit_button('SALVAR REVISÃO',use_container_width=True):
-            db.table('veiculos').update({'data_ultima_revisao':data.isoformat(),'km_ultima_revisao':int(kmr),'intervalo_revisao':10000,'atualizado_em':iso_agora()}).eq('placa',placa).execute(); st.success('Revisão atualizada.'); st.rerun()
+                st.markdown(f"<div class='car'><div class='picwrap'><img class='pic' src='data:image/png;base64,{b64(v['foto'])}'><span class='badge {bc}'>{badge}</span></div><div class='body'><div class='plate'>{e(v['placa'])}</div><div class='model'>{e(v['modelo'])}</div><div class='company'>{e(v['empresa'])}</div>{info}{prog}</div></div>",unsafe_allow_html=True)
+                label='↩ REGISTRAR RETORNO' if a else '➜ USAR ESTE VEÍCULO'
+                if st.button(label,key='a'+v['placa'],use_container_width=True): st.session_state.screen='return' if a else 'out';st.session_state.plate=v['placa'];st.rerun()
+    elif page=='📊 Painel':
+        st.subheader('Painel em tempo real'); c1,c2,c3=st.columns(3);c1.metric('Frota',len(vehicles));c2.metric('Disponíveis',len(vehicles)-len(openm));c3.metric('Em uso',len(openm))
+        if st.button('↻ ATUALIZAR',use_container_width=True):st.rerun()
+        for v in vehicles:
+            a=openm.get(v['placa']);prox,falta,pct=rev(v)
+            with st.container(border=True):
+                x,y=st.columns([1,2]);x.image(str(ASSETS/v['foto']),use_container_width=True);y.markdown(f"**{v['placa']} · {v['modelo']}**");y.write('🟠 EM USO' if a else '🟢 DISPONÍVEL');y.caption(f"KM atual: {km(v.get('km_atual'))}")
+                if a:y.caption(f"{a['pessoas']} · {a['destino']} · {elapsed(a['data_hora_saida'])}")
+                if prox:y.progress(pct/100,text=f"Revisão {km(prox)} · {pct}%")
+    else:
+        st.subheader('Revisão preventiva');p=st.selectbox('Veículo',[v['placa'] for v in vehicles]);v=next(x for x in vehicles if x['placa']==p)
+        with st.form('revision'):
+            d=st.date_input('Data da última revisão');kr=st.number_input('KM da última revisão',min_value=0,step=1,value=int(v.get('km_ultima_revisao') or v.get('km_atual') or 0));st.info(f'Próxima revisão: {km(int(kr)+10000)}')
+            if st.form_submit_button('SALVAR',use_container_width=True):DB.table('veiculos').update({'data_ultima_revisao':d.isoformat(),'km_ultima_revisao':int(kr),'intervalo_revisao':10000,'atualizado_em':nowiso()}).eq('placa',p).execute();st.success('Revisão salva.');st.rerun()
+elif mode=='out':
+    p=st.session_state.plate;v=next((x for x in vehicles if x['placa']==p),None)
+    if not v or p in openm:st.session_state.screen='home';st.rerun()
+    if st.button('‹  Registrar Saída',use_container_width=True):st.session_state.screen='home';st.rerun()
+    prox,falta,pct=rev(v)
+    st.markdown(f"<div class='formhero'><img src='data:image/png;base64,{b64(v['foto'])}'><div class='summary'><div><div class='plate'>{e(p)}</div><div class='model'>{e(v['modelo'])}</div><div class='company'>{e(v['empresa'])}</div></div><div class='sumright'>KM atual<br><b>{km(v.get('km_atual'))}</b><br><br>Próxima revisão<br><b>{km(prox) if prox else '—'}</b></div></div></div>",unsafe_allow_html=True)
+    if prox:st.progress(pct/100,text=f'Revisão preventiva · {pct}%')
+    with st.form('out'):
+        dest=st.text_input('📍 Para onde está indo?',placeholder='Suzano - Portaria 2');people=st.text_input('👥 Quem está indo?',placeholder='Evandro / João');ki=st.number_input('🚗 KM inicial',min_value=int(v.get('km_atual') or 0),step=1,value=int(v.get('km_atual') or 0));st.text_input('▣ Data / hora (automático)',value=datetime.now(TZ).strftime('%d/%m/%Y  %H:%M'),disabled=True)
+        ok=st.form_submit_button('➤ REGISTRAR SAÍDA',use_container_width=True)
+    if ok:
+        if not dest.strip() or not people.strip():st.error('Informe o destino e quem está indo.')
+        else:
+            try:DB.table('movimentacoes').insert({'placa':p,'destino':dest.strip(),'pessoas':people.strip(),'km_inicial':int(ki),'data_hora_saida':nowiso(),'status':'EM USO'}).execute();DB.table('veiculos').update({'km_atual':int(ki),'atualizado_em':nowiso()}).eq('placa',p).execute();st.session_state.screen='home';st.rerun()
+            except Exception:st.error('Não foi possível registrar a saída. Atualize e tente novamente.')
+elif mode=='return':
+    p=st.session_state.plate;a=openm.get(p);v=next((x for x in vehicles if x['placa']==p),None)
+    if not a or not v:st.session_state.screen='home';st.rerun()
+    if st.button('↩  Registrar Retorno',use_container_width=True):st.session_state.screen='home';st.rerun()
+    st.markdown(f"<div class='returnbox'><div class='returncar'><img src='data:image/png;base64,{b64(v['foto'])}'><div><div class='plate'>{e(p)}</div><div class='model'>{e(v['modelo'])}</div><div class='company'>{e(v['empresa'])}</div></div></div><div class='twostat'><div class='stat'>KM inicial<b>{km(a['km_inicial'])}</b></div><div class='stat'>Saída<b>{dt(a['data_hora_saida'],True)}</b></div></div></div>",unsafe_allow_html=True)
+    with st.form('ret'):
+        kf=st.number_input('▣ KM final',min_value=int(a['km_inicial']),step=1,value=int(a['km_inicial']));rod=int(kf)-int(a['km_inicial']);c1,c2=st.columns(2);c1.metric('🟢 KM rodado',km(rod));c2.metric('◷ Tempo de utilização',elapsed(a['data_hora_saida']));ok=st.form_submit_button('✓ CONFIRMAR RETORNO',use_container_width=True)
+    if ok:DB.table('movimentacoes').update({'km_final':int(kf),'data_hora_retorno':nowiso(),'status':'DEVOLVIDO'}).eq('id',a['id']).execute();DB.table('veiculos').update({'km_atual':int(kf),'atualizado_em':nowiso()}).eq('placa',p).execute();st.session_state.screen='home';st.rerun()
