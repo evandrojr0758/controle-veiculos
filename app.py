@@ -129,8 +129,8 @@ elif view=='panel':
 
 elif view=='admin':
  top('ADMINISTRAÇÃO DA FROTA')
- st.link_button('🔔 ATIVAR ALERTAS DO GERENCIAL', 'https://central-10sul.peachycrown16.chatgpt.site/alertas-gerencial',use_container_width=True)
- st.caption('O responsável autoriza cada celular para receber alertas de saída, retorno e mais de 2h em uso.')
+ st.link_button('🔔 ATIVAR NOTIFICAÇÕES NESTE CELULAR', 'https://central-10sul.peachycrown16.chatgpt.site/alertas-gerencial',use_container_width=True)
+ st.caption('Toque no botão, confirme sua identificação de responsável e permita as notificações. Não precisa copiar ou colar código.')
  painel,uso=st.columns(2)
  if painel.button('📊 PAINEL',key='admin_painel',use_container_width=True):setview('panel')
  if uso.button('🚗 INFORMAR USO',key='admin_informar_uso',use_container_width=True):setview('vehicles',filter='used')
