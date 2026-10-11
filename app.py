@@ -39,12 +39,13 @@ def setview(view,**kwargs):
 def top(sub): st.markdown(f"<div class='top'><div class='logo'>🔧</div><div class='brand'>10 SUL<small>CONTROLE DE VEÍCULOS · SERVICE</small></div></div><div class='mode'>{sub}</div>",unsafe_allow_html=True)
 
 @st.dialog('O km está correto?')
-def confirmar_km_inicial(placa,destino,ocupantes,km_inicial):
+def confirmar_km_inicial(placa,destino,ocupantes,km_inicial,condutor):
  st.markdown(f"**Veículo:** {placa}")
+ st.markdown(f"**Condutor:** {condutor}")
  st.markdown(f"**KM inicial informado:** {km(km_inicial)}")
  confirmar,corrigir=st.columns(2)
  if confirmar.button('✅ SIM, REGISTRAR',key='confirmar_km_inicial',use_container_width=True,type='primary'):
-  DB.table('movimentacoes').insert({'placa':placa,'destino':destino,'pessoas':ocupantes,'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}).execute()
+  DB.table('movimentacoes').insert({'placa':placa,'destino':destino,'pessoas':ocupantes,'condutor':condutor.strip(),'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}).execute()
   DB.table('veiculos').update({'km_atual':int(km_inicial),'atualizado_em':now()}).eq('placa',placa).execute()
   setview('vehicles',filter='used')
  if corrigir.button('✏️ NÃO, CORRIGIR',key='corrigir_km_inicial',use_container_width=True):
@@ -96,11 +97,12 @@ if view in ('vehicles','out','return'):
    dest=st.text_input('Destino',placeholder='Ex.: Portaria Leste, Suzano, Buscar mecânico',label_visibility='collapsed')
    st.markdown("<div class='fieldcallout people'><div class='fieldtitle'>👥 OCUPANTES — QUEM ESTÁ INDO NO VEÍCULO?</div><div class='fieldhint'>Digite o nome das pessoas que estão usando o veículo.</div></div>",unsafe_allow_html=True)
    people=st.text_input('Ocupantes',placeholder='Ex.: Evandro, João, Carlos',label_visibility='collapsed')
+   driver=st.text_input('👤 CONDUTOR — QUEM ESTÁ DIRIGINDO?',placeholder='Nome do condutor')
    ki=st.number_input('🚗 KM inicial',min_value=int(v.get('km_atual') or 0),value=int(v.get('km_atual') or 0),step=1); save=st.form_submit_button('➤ REGISTRAR SAÍDA')
   if save:
-   if not dest.strip() or not people.strip():st.error('Informe o DESTINO e os OCUPANTES antes de registrar a saída.')
+   if not dest.strip() or not people.strip() or not driver.strip():st.error('Informe o DESTINO, os OCUPANTES e o CONDUTOR antes de registrar a saída.')
    else:
-    confirmar_km_inicial(plate,dest.strip(),people.strip(),int(ki))
+    confirmar_km_inicial(plate,dest.strip(),people.strip(),int(ki),driver.strip())
  else:
   v=next((x for x in vs if x['placa']==plate),None); m=opened.get(plate)
   if not v or not m:setview('vehicles',filter='used')
