@@ -102,6 +102,9 @@ elif view=='panel':
 
 elif view=='admin':
  top('ADMINISTRAÇÃO DA FROTA')
+ painel,uso=st.columns(2)
+ if painel.button('📊 PAINEL',key='admin_painel',use_container_width=True):setview('panel')
+ if uso.button('🚗 INFORMAR USO',key='admin_informar_uso',use_container_width=True):setview('vehicles',filter='used')
  c1,c2,c3=st.columns(3)
  if c1.button('🔧 REVISÕES',use_container_width=True,type='primary' if tab=='revisao' else 'secondary'):setview('admin',tab='revisao')
  if c2.button('📋 HISTÓRICO',use_container_width=True,type='primary' if tab=='historico' else 'secondary'):setview('admin',tab='historico')
