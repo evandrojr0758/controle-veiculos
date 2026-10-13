@@ -3,6 +3,8 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
 import base64, html
+from urllib.parse import urlencode
+from gps_bridge import gps_suggestion
 
 st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
 BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
@@ -35,7 +37,16 @@ def load():
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
  return vs,{m['placa']:m for m in ms}
 def setview(view,**kwargs):
- d={'view':view}; d.update(kwargs); st.query_params.from_dict(d); st.rerun()
+ d={'view':view}; d.update(kwargs)
+ if st.session_state.get('native_android'): d['native']='android'
+ st.query_params.from_dict(d); st.rerun()
+
+def gps_command(action,m):
+ params={'native_command':action,'id':str(m['id'])}
+ if action=='start': params.update(plate=m['placa'],initial=int(m.get('km_inicial') or 0))
+ url='https://controle-veiculos-jpnsn36kukknr96dv9noma.streamlit.app/?'+urlencode(params)
+ label='📍 INICIAR CONTAGEM POR GPS' if action=='start' else '✓ Retorno confirmado'
+ st.markdown(f"<a class='action' data-gps-command='{action}' href='{esc(url)}' target='_self'>{label}</a>",unsafe_allow_html=True)
 def top(sub): st.markdown(f"<div class='top'><div class='logo'>🔧</div><div class='brand'>10 SUL<small>CONTROLE DE VEÍCULOS · SERVICE</small></div></div><div class='mode'>{sub}</div>",unsafe_allow_html=True)
 
 @st.dialog('O km está correto?')
@@ -45,8 +56,10 @@ def confirmar_km_inicial(placa,destino,ocupantes,km_inicial,condutor):
  st.markdown(f"**KM inicial informado:** {km(km_inicial)}")
  confirmar,corrigir=st.columns(2)
  if confirmar.button('✅ SIM, REGISTRAR',key='confirmar_km_inicial',use_container_width=True,type='primary'):
-  DB.table('movimentacoes').insert({'placa':placa,'destino':destino,'pessoas':ocupantes,'condutor':condutor.strip(),'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}).execute()
+  result=DB.table('movimentacoes').insert({'placa':placa,'destino':destino,'pessoas':ocupantes,'condutor':condutor.strip(),'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}).execute()
   DB.table('veiculos').update({'km_atual':int(km_inicial),'atualizado_em':now()}).eq('placa',placa).execute()
+  if st.session_state.get('native_android') and result.data:
+   st.session_state['gps_start']=result.data[0]
   setview('vehicles',filter='used')
  if corrigir.button('✏️ NÃO, CORRIGIR',key='corrigir_km_inicial',use_container_width=True):
   st.rerun()
@@ -60,6 +73,7 @@ def confirmar_km_final(placa,movimentacao_id,km_inicial,km_final):
  if confirmar.button('✅ SIM, REGISTRAR',key='confirmar_km_final',use_container_width=True,type='primary'):
   DB.table('movimentacoes').update({'km_final':int(km_final),'data_hora_retorno':now(),'status':'DEVOLVIDO'}).eq('id',movimentacao_id).execute()
   DB.table('veiculos').update({'km_atual':int(km_final),'atualizado_em':now()}).eq('placa',placa).execute()
+  if st.session_state.get('native_android'): st.session_state['gps_complete']={'id':movimentacao_id}
   setview('vehicles',filter='free')
  if corrigir.button('✏️ NÃO, CORRIGIR',key='corrigir_km_final',use_container_width=True):
   st.rerun()
@@ -72,6 +86,21 @@ st.markdown('''<style>
 try:vs,opened=load()
 except Exception: st.error('Falha ao conectar ao banco online.'); st.stop()
 q=st.query_params; view=q.get('view','vehicles'); plate=q.get('plate',''); flt=q.get('filter','free'); tab=q.get('tab','revisao')
+if q.get('native')=='android': st.session_state['native_android']=True
+if q.get('gps_return')=='1':
+ view='return'
+ if st.session_state.get('native_android') and plate not in opened and q.get('gps_id'):
+  finished=DB.table('movimentacoes').select('id,placa,status').eq('id',q.get('gps_id')).eq('placa',plate).eq('status','DEVOLVIDO').limit(1).execute().data or []
+  if finished:
+   st.session_state['gps_complete']=finished[0]
+   view='vehicles'; flt='free'
+if st.session_state.get('native_android'):
+ complete=st.session_state.pop('gps_complete',None)
+ if complete: gps_command('complete',complete)
+ start=st.session_state.pop('gps_start',None)
+ if start and str(opened.get(start['placa'],{}).get('id'))==str(start['id']):
+  gps_command('start',start)
+  st.caption('Autorize o GPS no aplicativo para iniciar a contagem desta viagem.')
 
 if view in ('vehicles','out','return'):
  top('USO DO VEÍCULO · SAÍDA E RETORNO')
@@ -80,11 +109,14 @@ if view in ('vehicles','out','return'):
   c1,c2=st.columns(2)
   if c1.button(f'DISPONÍVEIS {free}',use_container_width=True,type='primary' if flt=='free' else 'secondary'): setview('vehicles',filter='free')
   if c2.button(f'EM USO {busy}',use_container_width=True,type='primary' if flt=='used' else 'secondary'): setview('vehicles',filter='used')
+  if not st.session_state.get('native_android'):
+   st.link_button('📲 APLICATIVO ANDROID · KM AUTOMÁTICO', 'https://github.com/evandrojr0758/controle-veiculos/raw/refs/heads/main/downloads/VEICULOS_10_SUL_GPS_v1.apk',use_container_width=True)
   items=[v for v in vs if (v['placa'] in opened)==(flt=='used')]
   cards=[]
+  native_suffix='&native=android' if st.session_state.get('native_android') else ''
   for v in items:
    m=opened.get(v['placa']); busyv=bool(m); details=(f"<div class='use'>👤 <b>{esc(m.get('pessoas'))}</b><br>📍 {esc(m.get('destino'))}<br>◷ {clock(m.get('data_hora_saida'))} · {duration(m.get('data_hora_saida'))}</div>" if m else f"<div class='info'>🚗 KM atual<br><b>{km(v.get('km_atual'))}</b></div>")
-   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))}</div>{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
+   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))}</div>{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
   st.markdown("<div class='grid'>"+''.join(cards)+"</div>",unsafe_allow_html=True)
  elif view=='out':
   v=next((x for x in vs if x['placa']==plate),None)
@@ -109,8 +141,15 @@ if view in ('vehicles','out','return'):
   if st.button('‹ VOLTAR'):setview('vehicles',filter='used')
   st.markdown("<div class='title'>Registrar Retorno</div>",unsafe_allow_html=True)
   st.markdown(f"<div class='box'><div class='retcar'><img src='{image(v.get('foto'))}'><div><div class='plate'>{esc(plate)}</div><div class='model'>{esc(v.get('modelo'))}</div></div></div><div class='stats'><div class='stat'>KM INICIAL<b>{km(m.get('km_inicial'))}</b></div><div class='stat'>TEMPO EM USO<b>{duration(m.get('data_hora_saida'))}</b></div></div></div>",unsafe_allow_html=True)
+  initial=int(m.get('km_inicial') or 0)
+  suggested=gps_suggestion(m,q)
+  if suggested is not None:
+   st.info(f'GPS: {q.get("gps_km")} km estimados. Confira o hodômetro antes de confirmar o retorno.')
+   if q.get('gps_gap')=='1': st.warning('Houve interrupção no GPS. A distância pode estar incompleta; informe o KM do hodômetro.')
+  elif st.session_state.get('native_android'):
+   gps_command('start',m)
   with st.form('retorno'):
-   initial=int(m.get('km_inicial') or 0); kf=st.number_input('🚗 KM final',min_value=initial,value=initial,step=1); st.caption(f'KM rodado: {km(max(0,int(kf)-initial))}'); save=st.form_submit_button('✓ CONFIRMAR RETORNO')
+   kf=st.number_input('🚗 KM final',min_value=initial,value=suggested if suggested is not None else initial,step=1,key=f'return_km_{m["id"]}_{suggested}'); st.caption(f'KM rodado: {km(max(0,int(kf)-initial))}'); save=st.form_submit_button('✓ CONFIRMAR RETORNO')
   if save:
    if int(kf)<=initial: st.error('O KM final deve ser maior que o KM inicial.')
    else:
