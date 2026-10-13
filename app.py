@@ -5,6 +5,7 @@ from supabase import create_client
 import base64, html
 from urllib.parse import urlencode
 from gps_bridge import gps_suggestion
+from fleet_units import UNITS, resolve_unit, scope_fleet, route_params
 
 st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
 BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
@@ -12,10 +13,12 @@ BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3
 def get_db(): return create_client(st.secrets['SUPABASE_URL'],st.secrets['SUPABASE_KEY'])
 DB=get_db()
 def esc(x): return html.escape(str(x or ''))
-def km(x): return f"{int(x or 0):,}".replace(',','.')+' km'
+def km(x):
+ if x is None: return 'PENDENTE'
+ return f"{int(x or 0):,}".replace(',','.')+' km'
 def now(): return datetime.now(TZ).isoformat()
 def image(name):
- try:return 'data:image/png;base64,'+base64.b64encode((ASSETS/name).read_bytes()).decode()
+ try:return ('data:image/jpeg;base64,' if str(name).lower().endswith(('.jpg','.jpeg')) else 'data:image/png;base64,')+base64.b64encode((ASSETS/name).read_bytes()).decode()
  except:return ''
 def dt(x):
  try:return datetime.fromisoformat(str(x).replace('Z','+00:00')).astimezone(TZ)
@@ -29,7 +32,7 @@ def duration(start,end=None):
  if not a or not b:return '—'
  m=max(0,int((b-a).total_seconds()/60)); return f'{m//60}h {m%60:02d}min' if m>=60 else f'{m} min'
 def revision(v):
- if v.get('km_ultima_revisao') is None:return None,None,0
+ if v.get('km_ultima_revisao') is None or v.get('km_atual') is None:return None,None,0
  start=int(v.get('km_ultima_revisao') or 0); cur=int(v.get('km_atual') or 0); target=start+10000; left=target-cur; pct=max(0,min(100,round(((cur-start)/10000)*100)))
  return target,left,pct
 def load():
@@ -37,17 +40,17 @@ def load():
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
  return vs,{m['placa']:m for m in ms}
 def setview(view,**kwargs):
- d={'view':view}; d.update(kwargs)
+ d=route_params(view,UNIT,**kwargs)
  if st.session_state.get('native_android'): d['native']='android'
  st.query_params.from_dict(d); st.rerun()
 
 def gps_command(action,m):
- params={'native_command':action,'id':str(m['id'])}
+ params={'native_command':action,'id':str(m['id']),'unidade':UNIT}
  if action=='start': params.update(plate=m['placa'],initial=int(m.get('km_inicial') or 0))
  url='https://controle-veiculos-jpnsn36kukknr96dv9noma.streamlit.app/?'+urlencode(params)
  label='📍 INICIAR CONTAGEM POR GPS' if action=='start' else '✓ Retorno confirmado'
  st.markdown(f"<a class='action' data-gps-command='{action}' href='{esc(url)}' target='_self'>{label}</a>",unsafe_allow_html=True)
-def top(sub): st.markdown(f"<div class='top'><div class='logo'>🔧</div><div class='brand'>10 SUL<small>CONTROLE DE VEÍCULOS · SERVICE</small></div></div><div class='mode'>{sub}</div>",unsafe_allow_html=True)
+def top(sub): st.markdown(f"<div class='top'><div class='logo'>🔧</div><div class='brand'>10 SUL<small>CONTROLE DE VEÍCULOS · SERVICE</small></div></div><div class='mode'>{sub} · {esc(UNITS[UNIT])}</div>",unsafe_allow_html=True)
 
 @st.dialog('O km está correto?')
 def confirmar_km_inicial(placa,destino,ocupantes,km_inicial,condutor):
@@ -86,6 +89,20 @@ st.markdown('''<style>
 try:vs,opened=load()
 except Exception: st.error('Falha ao conectar ao banco online.'); st.stop()
 q=st.query_params; view=q.get('view','vehicles'); plate=q.get('plate',''); flt=q.get('filter','free'); tab=q.get('tab','revisao')
+all_vs=vs; UNIT=resolve_unit(q,all_vs)
+if q.get('native')=='android' and view=='vehicles' and not q.get('gps_return'):
+ if not q.get('unidade'): UNIT=st.session_state.get('native_unit',UNIT)
+ native_unit=st.selectbox('Unidade de operação',['ARA','BA'],index=['ARA','BA'].index(UNIT),format_func=lambda key:UNITS[key],key='native_fleet_unit_'+UNIT)
+ st.session_state['native_unit']=native_unit
+ if native_unit!=UNIT:
+  UNIT=native_unit; setview('vehicles',filter=flt)
+if view=='admin':
+ choices=list(UNITS)
+ selected=st.selectbox('Unidade',choices,index=choices.index(UNIT),format_func=lambda key:UNITS[key],key='fleet_unit_'+UNIT)
+ if selected!=UNIT:
+  UNIT=selected; setview('admin',tab=tab)
+vs,opened=scope_fleet(all_vs,opened,UNIT)
+units_by_plate={v['placa']:UNITS.get(v.get('unidade','ARA'),'Unidade não informada') for v in all_vs}
 if q.get('native')=='android': st.session_state['native_android']=True
 if q.get('gps_return')=='1':
  view='return'
@@ -113,10 +130,10 @@ if view in ('vehicles','out','return'):
    st.link_button('📲 APLICATIVO ANDROID · KM AUTOMÁTICO', 'https://github.com/evandrojr0758/controle-veiculos/raw/refs/heads/main/downloads/VEICULOS_10_SUL_GPS_v1.apk',use_container_width=True)
   items=[v for v in vs if (v['placa'] in opened)==(flt=='used')]
   cards=[]
-  native_suffix='&native=android' if st.session_state.get('native_android') else ''
+  native_suffix='&unidade='+UNIT+('&native=android' if st.session_state.get('native_android') else '')
   for v in items:
    m=opened.get(v['placa']); busyv=bool(m); details=(f"<div class='use'>👤 <b>{esc(m.get('pessoas'))}</b><br>📍 {esc(m.get('destino'))}<br>◷ {clock(m.get('data_hora_saida'))} · {duration(m.get('data_hora_saida'))}</div>" if m else f"<div class='info'>🚗 KM atual<br><b>{km(v.get('km_atual'))}</b></div>")
-   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))}</div>{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
+   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
   st.markdown("<div class='grid'>"+''.join(cards)+"</div>",unsafe_allow_html=True)
  elif view=='out':
   v=next((x for x in vs if x['placa']==plate),None)
@@ -132,7 +149,8 @@ if view in ('vehicles','out','return'):
    driver=st.text_input('👤 CONDUTOR — QUEM ESTÁ DIRIGINDO?',placeholder='Nome do condutor')
    ki=st.number_input('🚗 KM inicial',min_value=int(v.get('km_atual') or 0),value=int(v.get('km_atual') or 0),step=1); save=st.form_submit_button('➤ REGISTRAR SAÍDA')
   if save:
-   if not dest.strip() or not people.strip() or not driver.strip():st.error('Informe o DESTINO, os OCUPANTES e o CONDUTOR antes de registrar a saída.')
+   if v.get('km_atual') is None and int(ki)<=0:st.error('Informe o KM atual do hodômetro para iniciar o controle deste veículo.')
+   elif not dest.strip() or not people.strip() or not driver.strip():st.error('Informe o DESTINO, os OCUPANTES e o CONDUTOR antes de registrar a saída.')
    else:
     confirmar_km_inicial(plate,dest.strip(),people.strip(),int(ki),driver.strip())
  else:
@@ -162,7 +180,7 @@ elif view=='panel':
  for v in vs:
   m=opened.get(v['placa']); target,left,pct=revision(v); status=(f"<div class='pstatus busy'>● EM USO</div><div class='info'>👤 <b>Com:</b> {esc(m.get('pessoas'))}<br>📍 <b>Destino:</b> {esc(m.get('destino'))}<br>⌛ <b>Tempo em uso:</b> {duration(m.get('data_hora_saida'))}</div>" if m else "<div class='pstatus free'>● DISPONÍVEL</div>")
   revtxt='Revisão não cadastrada' if target is None else (f'REVISÃO VENCIDA HÁ {km(abs(left))}' if left<0 else f'FALTAM {km(left)}')
-  panelcards.append(f"<div class='panelcard'><div class='panelmain'><img src='{image(v.get('foto'))}'><div>{status}<div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b></div></div></div><div class='revbox'>{revtxt}</div></div>")
+  panelcards.append(f"<div class='panelcard'><div class='panelmain'><img src='{image(v.get('foto'))}'><div>{status}<div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b></div></div></div><div class='revbox'>{revtxt}</div></div>")
  st.markdown("<div class='panelgrid'>"+''.join(panelcards)+"</div>",unsafe_allow_html=True)
  st.markdown("<meta http-equiv='refresh' content='15'>",unsafe_allow_html=True)
 
@@ -177,24 +195,26 @@ elif view=='admin':
  if c1.button('🔧 REVISÕES',use_container_width=True,type='primary' if tab=='revisao' else 'secondary'):setview('admin',tab='revisao')
  if c2.button('📋 HISTÓRICO',use_container_width=True,type='primary' if tab=='historico' else 'secondary'):setview('admin',tab='historico')
  if c3.button('🚙 VEÍCULOS',use_container_width=True,type='primary' if tab=='veiculos' else 'secondary'):setview('admin',tab='veiculos')
+ if not vs:
+  st.info('Nenhum veículo cadastrado nesta unidade.'); st.stop()
  if tab=='revisao':
   st.markdown("<div class='title'>Controle de revisão</div>",unsafe_allow_html=True)
-  opts={f"{v['placa']} — {v.get('modelo','')}":v for v in vs}; sel=st.selectbox('Veículo',list(opts)); v=opts[sel]; target,left,pct=revision(v)
+  opts={f"{v['placa']} — {v.get('modelo','')} · {units_by_plate[v['placa']]}":v for v in vs}; sel=st.selectbox('Veículo',list(opts)); v=opts[sel]; target,left,pct=revision(v)
   if target is None: rclass=''; rbig='NÃO CADASTRADA'; rsmall='Cadastre a última revisão'
   elif left<0:rclass='over';rbig=f'VENCIDA<br>{km(abs(left))}';rsmall='KM PARA REVISÃO'
   elif left<=2000:rclass='alert';rbig=km(left);rsmall='KM PARA REVISÃO'
   else:rclass='';rbig=km(left);rsmall='KM PARA REVISÃO'
-  st.markdown(f"<div class='revcard'><div class='revgrid'><div><div class='plate'>{esc(v['placa'])}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b><br>Próxima revisão: <b>{km(target) if target is not None else '—'}</b></div></div><div class='remain {rclass}'>{rsmall}<b>{rbig}</b></div></div></div>",unsafe_allow_html=True)
+  st.markdown(f"<div class='revcard'><div class='revgrid'><div><div class='plate'>{esc(v['placa'])}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b><br>Próxima revisão: <b>{km(target) if target is not None else '—'}</b></div></div><div class='remain {rclass}'>{rsmall}<b>{rbig}</b></div></div></div>",unsafe_allow_html=True)
   with st.form('rev'):
    dr=st.date_input('Data da última revisão',value=dt(v.get('data_ultima_revisao')).date() if dt(v.get('data_ultima_revisao')) else datetime.now(TZ).date()); raw_last=v.get('km_ultima_revisao'); default_last=int(raw_last) if raw_last is not None else int(v.get('km_atual') or 0); kr=st.number_input('KM da última revisão',min_value=0,value=default_last,step=1); st.caption(f'Próxima revisão: {km(int(kr)+10000)}'); save=st.form_submit_button('💾 SALVAR / CORRIGIR ÚLTIMA REVISÃO')
   if save:
    DB.table('veiculos').update({'data_ultima_revisao':dr.isoformat(),'km_ultima_revisao':int(kr),'atualizado_em':now()}).eq('placa',v['placa']).execute(); st.success('Revisão atualizada.'); st.rerun()
  elif tab=='historico':
   st.markdown("<div class='title'>Histórico de movimentações</div>",unsafe_allow_html=True)
-  hist=DB.table('movimentacoes').select('*').order('data_hora_saida',desc=True).limit(100).execute().data or []
+  hist=DB.table('movimentacoes').select('*').in_('placa',[v['placa'] for v in vs]).order('data_hora_saida',desc=True).limit(100).execute().data or []
   for m in hist:
    end=m.get('data_hora_retorno'); kf=m.get('km_final'); rod=(int(kf)-int(m.get('km_inicial') or 0)) if kf is not None else None
-   st.markdown(f"<div class='history'><b>{esc(m.get('placa'))}</b> · {'🟠 EM USO' if m.get('status')=='EM USO' else '✅ DEVOLVIDO'}<br>👤 {esc(m.get('pessoas'))}<br>📍 {esc(m.get('destino'))}<br>Saída: {dateclock(m.get('data_hora_saida'))}<br>Retorno: {dateclock(end)}<br>⏱️ Tempo de uso: <b>{duration(m.get('data_hora_saida'),end) if end else duration(m.get('data_hora_saida'))}</b><br>KM inicial: {km(m.get('km_inicial'))} · KM final: {km(kf) if kf is not None else '—'} · Rodado: {km(rod) if rod is not None else '—'}</div>",unsafe_allow_html=True)
+   st.markdown(f"<div class='history'><b>{esc(m.get('placa'))}</b> · {esc(units_by_plate.get(m['placa']))} · {'🟠 EM USO' if m.get('status')=='EM USO' else '✅ DEVOLVIDO'}<br>👤 {esc(m.get('pessoas'))}<br>📍 {esc(m.get('destino'))}<br>Saída: {dateclock(m.get('data_hora_saida'))}<br>Retorno: {dateclock(end)}<br>⏱️ Tempo de uso: <b>{duration(m.get('data_hora_saida'),end) if end else duration(m.get('data_hora_saida'))}</b><br>KM inicial: {km(m.get('km_inicial'))} · KM final: {km(kf) if kf is not None else '—'} · Rodado: {km(rod) if rod is not None else '—'}</div>",unsafe_allow_html=True)
    with st.expander(f"Gerenciar lançamento #{m.get('id')}"):
     st.warning('A exclusão é definitiva. Se este lançamento estiver EM USO, o veículo voltará a aparecer como disponível.')
     st.markdown("<div class='dangerbtn'>",unsafe_allow_html=True)
@@ -205,4 +225,14 @@ elif view=='admin':
     st.markdown('</div>',unsafe_allow_html=True)
  else:
   st.markdown("<div class='title'>Cadastro dos veículos</div>",unsafe_allow_html=True)
-  for v in vs: st.markdown(f"<div class='history'><b>{esc(v.get('placa'))}</b> · {esc(v.get('modelo'))}<br>KM atual: {km(v.get('km_atual'))}<br>Foto: {esc(v.get('foto'))}</div>",unsafe_allow_html=True)
+  for v in vs:
+   st.markdown(f"<div class='history'><b>{esc(v.get('placa'))}</b> · {esc(v.get('modelo'))}<br><b>Unidade: {esc(units_by_plate[v['placa']])}</b><br>KM atual: {km(v.get('km_atual'))}</div>",unsafe_allow_html=True)
+   with st.expander(f"Informar / corrigir KM — {v['placa']}"):
+    with st.form('km_vehicle_'+v['placa']):
+     current=st.number_input('KM atual do hodômetro',min_value=0,value=int(v.get('km_atual') or 0),step=1)
+     save_km=st.form_submit_button('💾 SALVAR KM ATUAL')
+    if save_km:
+     if current<=0:st.error('Informe o KM atual do hodômetro.')
+     elif v['placa'] in opened:st.error('Este veículo está em uso. Informe o KM no retorno da viagem.')
+     else:
+      DB.table('veiculos').update({'km_atual':int(current),'atualizado_em':now()}).eq('placa',v['placa']).execute();st.success('KM atualizado.');st.rerun()
