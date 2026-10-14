@@ -258,10 +258,12 @@ elif view=='admin':
  elif tab=='historico':
   st.markdown("<div class='title'>Histórico de movimentações</div>",unsafe_allow_html=True)
   hist=DB.table('movimentacoes').select('*').in_('placa',[v['placa'] for v in vs]).order('data_hora_saida',desc=True).limit(100).execute().data or []
+  modelos_historico={v['placa']:str(v.get('modelo') or 'Modelo não informado') for v in vs}
   for m in hist:
+   modelo_historico=modelos_historico.get(m.get('placa'),'Modelo não informado')
    end=m.get('data_hora_retorno'); kf=m.get('km_final'); rod=(int(kf)-int(m.get('km_inicial') or 0)) if kf is not None else None
-   st.markdown(f"<div class='history'><b>{esc(m.get('placa'))}</b> · {esc(units_by_plate.get(m['placa']))} · {'🟠 EM USO' if m.get('status')=='EM USO' else '✅ DEVOLVIDO'}<br>👤 {esc(m.get('pessoas'))}<br>📍 {esc(m.get('destino'))}<br>Saída: {dateclock(m.get('data_hora_saida'))}<br>Retorno: {dateclock(end)}<br>⏱️ Tempo de uso: <b>{duration(m.get('data_hora_saida'),end) if end else duration(m.get('data_hora_saida'))}</b><br>KM inicial: {km(m.get('km_inicial'))} · KM final: {km(kf) if kf is not None else '—'} · Rodado: {km(rod) if rod is not None else '—'}</div>",unsafe_allow_html=True)
-   with st.expander(f"Gerenciar lançamento #{m.get('id')}"):
+   st.markdown(f"<div class='history'><div style='font-size:20px;font-weight:900;color:#10284a;line-height:1.3'>🚗 {esc(modelo_historico)}</div><div style='font-size:17px;font-weight:800;margin:5px 0'>PLACA: {esc(m.get('placa'))}</div>{esc(units_by_plate.get(m['placa']))} · {'🟠 EM USO' if m.get('status')=='EM USO' else '✅ DEVOLVIDO'}<br>👤 {esc(m.get('pessoas'))}<br>📍 {esc(m.get('destino'))}<br>Saída: {dateclock(m.get('data_hora_saida'))}<br>Retorno: {dateclock(end)}<br>⏱️ Tempo de uso: <b>{duration(m.get('data_hora_saida'),end) if end else duration(m.get('data_hora_saida'))}</b><br>KM inicial: {km(m.get('km_inicial'))} · KM final: {km(kf) if kf is not None else '—'} · Rodado: {km(rod) if rod is not None else '—'}</div>",unsafe_allow_html=True)
+   with st.expander(f"Gerenciar lançamento #{m.get('id')} — {modelo_historico} · {m.get('placa')}"):
     st.warning('A exclusão é definitiva. Se este lançamento estiver EM USO, o veículo voltará a aparecer como disponível.')
     st.markdown("<div class='dangerbtn'>",unsafe_allow_html=True)
     if st.button('🗑️ EXCLUIR ESTA MOVIMENTAÇÃO',key=f"del_{m.get('id')}",use_container_width=True):
