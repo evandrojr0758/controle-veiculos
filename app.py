@@ -31,6 +31,19 @@ def duration(start,end=None):
  a=dt(start); b=dt(end) if end else datetime.now(TZ)
  if not a or not b:return '—'
  m=max(0,int((b-a).total_seconds()/60)); return f'{m//60}h {m%60:02d}min' if m>=60 else f'{m} min'
+def revision_appointment_date(v):
+ try:return datetime.strptime(str(v.get('data_revisao_agendada') or ''),'%Y-%m-%d').date()
+ except (ValueError,TypeError):return None
+
+def revision_appointment_banner(v):
+ scheduled=revision_appointment_date(v)
+ if scheduled is None:return ''
+ today=datetime.now(TZ).date()
+ urgent=scheduled<=today
+ label='REVISÃO AGENDADA PARA HOJE' if scheduled==today else ('DATA AGENDADA JÁ PASSOU — CONFIRA A REVISÃO' if scheduled<today else 'PRÓXIMA REVISÃO AGENDADA')
+ bg,border,fg=('#fee2e2','#dc2626','#991b1b') if urgent else ('#fff4cc','#f59e0b','#78350f')
+ return f"<div role='note' style='margin:12px 0;padding:14px;border:2px solid {border};border-radius:12px;background:{bg};color:{fg};line-height:1.4'><div style='font-size:12px;font-weight:850'>📅 {label}</div><div style='font-size:26px;font-weight:900'>{scheduled.strftime('%d/%m/%Y')}</div><div style='font-size:12px'>Organize o uso do veículo considerando este agendamento.</div></div>"
+
 def revision(v):
  if v.get('km_ultima_revisao') is None or v.get('km_atual') is None:return None,None,0
  start=int(v.get('km_ultima_revisao') or 0); cur=int(v.get('km_atual') or 0); target=start+10000; left=target-cur; pct=max(0,min(100,round(((cur-start)/10000)*100)))
@@ -133,7 +146,7 @@ if view in ('vehicles','out','return'):
   native_suffix='&unidade='+UNIT+('&native=android' if st.session_state.get('native_android') else '')
   for v in items:
    m=opened.get(v['placa']); busyv=bool(m); details=(f"<div class='use'>👤 <b>{esc(m.get('pessoas'))}</b><br>📍 {esc(m.get('destino'))}<br>◷ {clock(m.get('data_hora_saida'))} · {duration(m.get('data_hora_saida'))}</div>" if m else f"<div class='info'>🚗 KM atual<br><b>{km(v.get('km_atual'))}</b></div>")
-   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
+   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{revision_appointment_banner(v)}{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
   st.markdown("<div class='grid'>"+''.join(cards)+"</div>",unsafe_allow_html=True)
  elif view=='out':
   v=next((x for x in vs if x['placa']==plate),None)
@@ -141,6 +154,7 @@ if view in ('vehicles','out','return'):
   if st.button('‹ VOLTAR'):setview('vehicles',filter='free')
   st.markdown("<div class='title'>Registrar Saída</div>",unsafe_allow_html=True)
   st.markdown(f"<div class='box'><div class='heroimg'><img src='{image(v.get('foto'))}'></div><div class='summary'><div><div class='plate'>{esc(plate)}</div><div class='model'>{esc(v.get('modelo'))}</div></div><div class='right'>KM ATUAL<br><b>{km(v.get('km_atual'))}</b></div></div></div><div class='spacer'></div>",unsafe_allow_html=True)
+  st.markdown(revision_appointment_banner(v),unsafe_allow_html=True)
   with st.form('saida'):
    st.markdown("<div class='fieldcallout'><div class='fieldtitle'>📍 DESTINO — PARA ONDE O VEÍCULO ESTÁ INDO?</div><div class='fieldhint'>Informe o local ou a finalidade do deslocamento.</div></div>",unsafe_allow_html=True)
    dest=st.text_input('Destino',placeholder='Ex.: Portaria Leste, Suzano, Buscar mecânico',label_visibility='collapsed')
@@ -166,6 +180,7 @@ if view in ('vehicles','out','return'):
    if q.get('gps_gap')=='1': st.warning('Houve interrupção no GPS. A distância pode estar incompleta; informe o KM do hodômetro.')
   elif st.session_state.get('native_android'):
    gps_command('start',m)
+  st.markdown(revision_appointment_banner(v),unsafe_allow_html=True)
   with st.form('retorno'):
    kf=st.number_input('🚗 KM final',min_value=initial,value=suggested if suggested is not None else initial,step=1,key=f'return_km_{m["id"]}_{suggested}'); st.caption(f'KM rodado: {km(max(0,int(kf)-initial))}'); save=st.form_submit_button('✓ CONFIRMAR RETORNO')
   if save:
@@ -180,7 +195,7 @@ elif view=='panel':
  for v in vs:
   m=opened.get(v['placa']); target,left,pct=revision(v); status=(f"<div class='pstatus busy'>● EM USO</div><div class='info'>👤 <b>Com:</b> {esc(m.get('pessoas'))}<br>📍 <b>Destino:</b> {esc(m.get('destino'))}<br>⌛ <b>Tempo em uso:</b> {duration(m.get('data_hora_saida'))}</div>" if m else "<div class='pstatus free'>● DISPONÍVEL</div>")
   revtxt='Revisão não cadastrada' if target is None else (f'REVISÃO VENCIDA HÁ {km(abs(left))}' if left<0 else f'FALTAM {km(left)}')
-  panelcards.append(f"<div class='panelcard'><div class='panelmain'><img src='{image(v.get('foto'))}'><div>{status}<div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b></div></div></div><div class='revbox'>{revtxt}</div></div>")
+  panelcards.append(f"<div class='panelcard'><div class='panelmain'><img src='{image(v.get('foto'))}'><div>{status}<div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b></div></div></div><div class='revbox'>{revtxt}</div>{revision_appointment_banner(v)}</div>")
  st.markdown("<div class='panelgrid'>"+''.join(panelcards)+"</div>",unsafe_allow_html=True)
  st.markdown("<meta http-equiv='refresh' content='15'>",unsafe_allow_html=True)
 
@@ -205,6 +220,29 @@ elif view=='admin':
   elif left<=2000:rclass='alert';rbig=km(left);rsmall='KM PARA REVISÃO'
   else:rclass='';rbig=km(left);rsmall='KM PARA REVISÃO'
   st.markdown(f"<div class='revcard'><div class='revgrid'><div><div class='plate'>{esc(v['placa'])}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b><br>Próxima revisão: <b>{km(target) if target is not None else '—'}</b></div></div><div class='remain {rclass}'>{rsmall}<b>{rbig}</b></div></div></div>",unsafe_allow_html=True)
+  st.markdown(revision_appointment_banner(v),unsafe_allow_html=True)
+  st.markdown("### 📅 Agendamento da próxima revisão")
+  with st.form('agendar_revisao_'+v['placa']):
+   data_agendada=st.date_input('Data agendada da próxima revisão',value=revision_appointment_date(v),format='DD/MM/YYYY',key='data_agendamento_'+v['placa'])
+   st.caption('Esta data aparecerá em destaque para quem for usar este veículo.')
+   salvar_agendamento=st.form_submit_button('💾 SALVAR AGENDAMENTO')
+   cancelar_agendamento=st.form_submit_button('CANCELAR AGENDAMENTO',disabled=revision_appointment_date(v) is None)
+  if salvar_agendamento or cancelar_agendamento:
+   if salvar_agendamento and data_agendada is None:
+    st.error('Informe a data da próxima revisão.')
+   else:
+    valor_agendamento=None if cancelar_agendamento else data_agendada.isoformat()
+    try:
+     confirmado=DB.table('veiculos').update({'data_revisao_agendada':valor_agendamento,'atualizado_em':now()}).eq('placa',v['placa']).execute()
+     if not confirmado.data or confirmado.data[0].get('data_revisao_agendada')!=valor_agendamento:
+      st.error('Não foi possível confirmar o agendamento. Atualize e tente novamente.')
+     else:
+      st.session_state['aviso_agendamento_revisao']='Agendamento cancelado.' if cancelar_agendamento else 'Agendamento da próxima revisão salvo.'
+      st.rerun()
+    except Exception:
+     st.error('Não foi possível salvar o agendamento. Tente novamente.')
+  if st.session_state.get('aviso_agendamento_revisao'):
+   st.success(st.session_state.pop('aviso_agendamento_revisao'))
   with st.form('rev'):
    dr=st.date_input('Data da última revisão',value=dt(v.get('data_ultima_revisao')).date() if dt(v.get('data_ultima_revisao')) else datetime.now(TZ).date()); raw_last=v.get('km_ultima_revisao'); default_last=int(raw_last) if raw_last is not None else int(v.get('km_atual') or 0); kr=st.number_input('KM da última revisão',min_value=0,value=default_last,step=1); st.caption(f'Próxima revisão: {km(int(kr)+10000)}'); save=st.form_submit_button('💾 SALVAR / CORRIGIR ÚLTIMA REVISÃO')
   if save:
