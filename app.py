@@ -58,6 +58,25 @@ def load():
  vs=DB.table('veiculos').select('*').order('placa').execute().data or []
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
  return vs,{m['placa']:m for m in ms}
+def editar_km_inicial_em_uso(m,prefixo):
+ st.markdown('**✏️ Corrigir KM inicial da viagem em uso**')
+ with st.form(f"corrigir_km_inicial_{prefixo}_{m['id']}"):
+  novo_km=st.number_input('KM inicial correto',min_value=1,value=max(1,int(m.get('km_inicial') or 0)),step=1)
+  salvar=st.form_submit_button('💾 SALVAR KM INICIAL')
+ if st.session_state.get('km_inicial_corrigido')==m['id']:
+  st.success('KM inicial corrigido. A viagem continua em uso.')
+  st.session_state.pop('km_inicial_corrigido',None)
+ if salvar:
+  try:
+   resultado=DB.rpc('corrigir_km_inicial_em_uso',{'p_movimentacao_id':m['id'],'p_km_esperado':m.get('km_inicial'),'p_novo_km':int(novo_km)}).execute()
+   if not resultado.data or resultado.data.get('km_inicial')!=int(novo_km):
+    st.error('Não foi possível confirmar a correção. Atualize a tela.')
+   else:
+    st.session_state['km_inicial_corrigido']=m['id']
+    st.rerun()
+  except Exception as e:
+   st.error(getattr(e,'message','Não foi possível corrigir o KM inicial. Atualize a tela e tente novamente.'))
+
 def setview(view,**kwargs):
  d=route_params(view,UNIT,**kwargs)
  if st.session_state.get('native_android'): d['native']='android'
@@ -264,6 +283,8 @@ elif view=='admin':
    end=m.get('data_hora_retorno'); kf=m.get('km_final'); rod=(int(kf)-int(m.get('km_inicial') or 0)) if kf is not None else None
    st.markdown(f"<div class='history'><div style='font-size:20px;font-weight:900;color:#10284a;line-height:1.3'>🚗 {esc(modelo_historico)}</div><div style='font-size:17px;font-weight:800;margin:5px 0'>PLACA: {esc(m.get('placa'))}</div>{esc(units_by_plate.get(m['placa']))} · {'🟠 EM USO' if m.get('status')=='EM USO' else '✅ DEVOLVIDO'}<br>👤 {esc(m.get('pessoas'))}<br>📍 {esc(m.get('destino'))}<br>Saída: {dateclock(m.get('data_hora_saida'))}<br>Retorno: {dateclock(end)}<br>⏱️ Tempo de uso: <b>{duration(m.get('data_hora_saida'),end) if end else duration(m.get('data_hora_saida'))}</b><br>KM inicial: {km(m.get('km_inicial'))} · KM final: {km(kf) if kf is not None else '—'} · Rodado: {km(rod) if rod is not None else '—'}</div>",unsafe_allow_html=True)
    with st.expander(f"Gerenciar lançamento #{m.get('id')} — {modelo_historico} · {m.get('placa')}"):
+    if m.get('status')=='EM USO':
+     editar_km_inicial_em_uso(m,'historico')
     st.warning('A exclusão é definitiva. Se este lançamento estiver EM USO, o veículo voltará a aparecer como disponível.')
     st.markdown("<div class='dangerbtn'>",unsafe_allow_html=True)
     if st.button('🗑️ EXCLUIR ESTA MOVIMENTAÇÃO',key=f"del_{m.get('id')}",use_container_width=True):
@@ -276,12 +297,16 @@ elif view=='admin':
   for v in vs:
    st.markdown(f"<div class='history'><b>{esc(v.get('placa'))}</b> · {esc(v.get('modelo'))}<br><b>Unidade: {esc(units_by_plate[v['placa']])}</b><br>KM atual: {km(v.get('km_atual'))}</div>",unsafe_allow_html=True)
    with st.expander(f"Informar / corrigir KM — {v['placa']}"):
-    with st.form('km_vehicle_'+v['placa']):
-     current=st.number_input('KM atual do hodômetro',min_value=0,value=int(v.get('km_atual') or 0),step=1)
-     save_km=st.form_submit_button('💾 SALVAR KM ATUAL')
-    if save_km:
-     if current<=0:st.error('Informe o KM atual do hodômetro.')
-     elif v['placa'] in opened:st.error('Este veículo está em uso. Informe o KM no retorno da viagem.')
-     else:
-      DB.table('veiculos').update({'km_atual':int(current),'atualizado_em':now()}).eq('placa',v['placa']).execute();st.success('KM atualizado.');st.rerun()
+    if v['placa'] in opened:
+     editar_km_inicial_em_uso(opened[v['placa']],'cadastro')
+    else:
+     with st.form('km_vehicle_'+v['placa']):
+      current=st.number_input('KM atual do hodômetro',min_value=0,value=int(v.get('km_atual') or 0),step=1)
+      save_km=st.form_submit_button('💾 SALVAR KM ATUAL')
+     if save_km:
+      if current<=0:st.error('Informe o KM atual do hodômetro.')
+      elif v['placa'] in opened:st.error('Este veículo está em uso. Informe o KM no retorno da viagem.')
+      else:
+       DB.table('veiculos').update({'km_atual':int(current),'atualizado_em':now()}).eq('placa',v['placa']).execute();st.success('KM atualizado.');st.rerun()
+
 
