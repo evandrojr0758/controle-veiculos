@@ -35,14 +35,20 @@ def revision_appointment_date(v):
  try:return datetime.strptime(str(v.get('data_revisao_agendada') or ''),'%Y-%m-%d').date()
  except (ValueError,TypeError):return None
 
+def revision_appointment_time(v):
+ try:return datetime.strptime(str(v.get('hora_revisao_agendada') or '')[:5],'%H:%M').time()
+ except (ValueError,TypeError):return None
+
 def revision_appointment_banner(v):
  scheduled=revision_appointment_date(v)
  if scheduled is None:return ''
+ appointment_time=revision_appointment_time(v)
+ hour_text=appointment_time.strftime('%H:%M') if appointment_time else 'Horário não informado'
  today=datetime.now(TZ).date()
  urgent=scheduled<=today
  label='REVISÃO AGENDADA PARA HOJE' if scheduled==today else ('DATA AGENDADA JÁ PASSOU — CONFIRA A REVISÃO' if scheduled<today else 'PRÓXIMA REVISÃO AGENDADA')
  bg,border,fg=('#fee2e2','#dc2626','#991b1b') if urgent else ('#fff4cc','#f59e0b','#78350f')
- return f"<div role='note' style='margin:12px 0;padding:14px;border:2px solid {border};border-radius:12px;background:{bg};color:{fg};line-height:1.4'><div style='font-size:12px;font-weight:850'>📅 {label}</div><div style='font-size:26px;font-weight:900'>{scheduled.strftime('%d/%m/%Y')}</div><div style='font-size:12px'>Organize o uso do veículo considerando este agendamento.</div></div>"
+ return f"<div role='note' style='margin:12px 0;padding:14px;border:2px solid {border};border-radius:12px;background:{bg};color:{fg};line-height:1.4'><div style='font-size:12px;font-weight:850'>📅 {label}</div><div style='font-size:26px;font-weight:900'>{scheduled.strftime('%d/%m/%Y')} · {hour_text}</div><div style='font-size:12px'>Organize o uso do veículo considerando este agendamento.</div></div>"
 
 def revision(v):
  if v.get('km_ultima_revisao') is None or v.get('km_atual') is None:return None,None,0
@@ -224,17 +230,19 @@ elif view=='admin':
   st.markdown("### 📅 Agendamento da próxima revisão")
   with st.form('agendar_revisao_'+v['placa']):
    data_agendada=st.date_input('Data agendada da próxima revisão',value=revision_appointment_date(v),format='DD/MM/YYYY',key='data_agendamento_'+v['placa'])
-   st.caption('Esta data aparecerá em destaque para quem for usar este veículo.')
+   hora_agendada=st.time_input('Horário agendado da revisão',value=revision_appointment_time(v),step=60,key='hora_agendamento_'+v['placa'])
+   st.caption('Data e hora aparecerão em destaque para quem for usar este veículo. Horário de Brasília.')
    salvar_agendamento=st.form_submit_button('💾 SALVAR AGENDAMENTO')
    cancelar_agendamento=st.form_submit_button('CANCELAR AGENDAMENTO',disabled=revision_appointment_date(v) is None)
   if salvar_agendamento or cancelar_agendamento:
-   if salvar_agendamento and data_agendada is None:
-    st.error('Informe a data da próxima revisão.')
+   if salvar_agendamento and (data_agendada is None or hora_agendada is None):
+    st.error('Informe a data e o horário da próxima revisão.')
    else:
     valor_agendamento=None if cancelar_agendamento else data_agendada.isoformat()
+    valor_hora=None if cancelar_agendamento else hora_agendada.isoformat()
     try:
-     confirmado=DB.table('veiculos').update({'data_revisao_agendada':valor_agendamento,'atualizado_em':now()}).eq('placa',v['placa']).execute()
-     if not confirmado.data or confirmado.data[0].get('data_revisao_agendada')!=valor_agendamento:
+     confirmado=DB.table('veiculos').update({'data_revisao_agendada':valor_agendamento,'hora_revisao_agendada':valor_hora,'atualizado_em':now()}).eq('placa',v['placa']).execute()
+     if not confirmado.data or confirmado.data[0].get('data_revisao_agendada')!=valor_agendamento or confirmado.data[0].get('hora_revisao_agendada')!=valor_hora:
       st.error('Não foi possível confirmar o agendamento. Atualize e tente novamente.')
      else:
       st.session_state['aviso_agendamento_revisao']='Agendamento cancelado.' if cancelar_agendamento else 'Agendamento da próxima revisão salvo.'
@@ -274,3 +282,4 @@ elif view=='admin':
      elif v['placa'] in opened:st.error('Este veículo está em uso. Informe o KM no retorno da viagem.')
      else:
       DB.table('veiculos').update({'km_atual':int(current),'atualizado_em':now()}).eq('placa',v['placa']).execute();st.success('KM atualizado.');st.rerun()
+
