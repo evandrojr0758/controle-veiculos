@@ -261,14 +261,42 @@ elif view=='admin':
   st.markdown(f"<div class='revcard'><div class='revgrid'><div><div class='plate'>{esc(v['placa'])}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b><br>Próxima revisão: <b>{km(target) if target is not None else '—'}</b></div></div><div class='remain {rclass}'>{rsmall}<b>{rbig}</b></div></div></div>",unsafe_allow_html=True)
   st.markdown(revision_appointment_banner(v),unsafe_allow_html=True)
   aviso=st.session_state.pop('aviso_conclusao_revisao',None)
-  if aviso:st.success(aviso)
-  st.markdown('### ✅ Confirmar conclusão da revisão')
-  st.caption('Preencha somente depois de realizar o serviço. A confirmação encerra o agendamento e inicia a contagem a partir do KM realizado.')
-  with st.form('concluir_revisao_'+v['placa']):
-   concluida_data=st.date_input('Data em que a revisão foi realizada',value=None,max_value=datetime.now(TZ).date(),format='DD/MM/YYYY')
-   concluida_km=st.number_input('KM em que a revisão foi realizada',min_value=0,value=None,step=1,placeholder='Informe o KM do serviço')
-   confirma_conclusao=st.checkbox('Confirmo que a revisão foi realizada e conferi a data e o KM.')
-   concluir_revisao=st.form_submit_button('✅ CONFIRMAR CONCLUSÃO DA REVISÃO',type='primary')
+  if aviso:
+   st.success(aviso)
+   st.session_state.pop('data_agendamento_'+v['placa'],None)
+   st.session_state.pop('hora_agendamento_'+v['placa'],None)
+  st.markdown("### 📅 Agendamento da próxima revisão")
+  if st.session_state.get('aviso_agendamento_revisao'):
+   st.success(st.session_state.pop('aviso_agendamento_revisao'))
+  with st.form('agendar_revisao_'+v['placa']):
+   data_agendada=st.date_input('Data agendada da próxima revisão',value=revision_appointment_date(v),format='DD/MM/YYYY',key='data_agendamento_'+v['placa'])
+   hora_agendada=st.time_input('Horário agendado da revisão',value=revision_appointment_time(v),step=60,key='hora_agendamento_'+v['placa'])
+   st.caption('Data e hora aparecerão em destaque para quem for usar este veículo. Horário de Brasília. Para remarcar, altere a data e o horário e salve.')
+   salvar_agendamento=st.form_submit_button('💾 SALVAR / ATUALIZAR AGENDAMENTO')
+   st.divider()
+   st.markdown('**✅ Conclusão deste agendamento**')
+   tem_agendamento=revision_appointment_date(v) is not None
+   if not tem_agendamento:st.caption('Salve o agendamento para habilitar a confirmação da conclusão.')
+   st.caption('Depois de realizar o serviço, informe a data e o KM reais. A confirmação encerra este agendamento e inicia a contagem para a próxima revisão.')
+   concluida_data=st.date_input('Data em que a revisão foi realizada',value=None,max_value=datetime.now(TZ).date(),format='DD/MM/YYYY',disabled=not tem_agendamento)
+   concluida_km=st.number_input('KM em que a revisão foi realizada',min_value=0,value=None,step=1,placeholder='Informe o KM do serviço',disabled=not tem_agendamento)
+   confirma_conclusao=st.checkbox('Confirmo que a revisão foi realizada e conferi a data e o KM.',disabled=not tem_agendamento)
+   concluir_revisao=st.form_submit_button('✅ CONFIRMAR CONCLUSÃO DA REVISÃO',type='primary',disabled=not tem_agendamento)
+  if salvar_agendamento:
+   if data_agendada is None or hora_agendada is None:
+    st.error('Informe a data e o horário da próxima revisão.')
+   else:
+    valor_agendamento=data_agendada.isoformat()
+    valor_hora=hora_agendada.isoformat()
+    try:
+     confirmado=DB.table('veiculos').update({'data_revisao_agendada':valor_agendamento,'hora_revisao_agendada':valor_hora,'atualizado_em':now()}).eq('placa',v['placa']).execute()
+     if not confirmado.data or confirmado.data[0].get('data_revisao_agendada')!=valor_agendamento or confirmado.data[0].get('hora_revisao_agendada')!=valor_hora:
+      st.error('Não foi possível confirmar o agendamento. Atualize e tente novamente.')
+     else:
+      st.session_state['aviso_agendamento_revisao']='Agendamento da próxima revisão salvo.'
+      st.rerun()
+    except Exception:
+     st.error('Não foi possível salvar o agendamento. Tente novamente.')
   if concluir_revisao:
    try:
     if not confirma_conclusao or concluida_km is None:raise ValueError('Informe a data e o KM e marque a confirmação do serviço realizado.')
@@ -287,30 +315,6 @@ elif view=='admin':
      st.rerun()
    except ValueError as e:st.error(str(e))
    except Exception:st.error('Não foi possível registrar a conclusão. Confira o cadastro e tente novamente.')
-  st.markdown("### 📅 Agendamento da próxima revisão")
-  with st.form('agendar_revisao_'+v['placa']):
-   data_agendada=st.date_input('Data agendada da próxima revisão',value=revision_appointment_date(v),format='DD/MM/YYYY',key='data_agendamento_'+v['placa'])
-   hora_agendada=st.time_input('Horário agendado da revisão',value=revision_appointment_time(v),step=60,key='hora_agendamento_'+v['placa'])
-   st.caption('Data e hora aparecerão em destaque para quem for usar este veículo. Horário de Brasília. Cancelar apenas desmarca; para serviço realizado, confirme a conclusão acima.')
-   salvar_agendamento=st.form_submit_button('💾 SALVAR AGENDAMENTO')
-   cancelar_agendamento=st.form_submit_button('CANCELAR AGENDAMENTO',disabled=revision_appointment_date(v) is None)
-  if salvar_agendamento or cancelar_agendamento:
-   if salvar_agendamento and (data_agendada is None or hora_agendada is None):
-    st.error('Informe a data e o horário da próxima revisão.')
-   else:
-    valor_agendamento=None if cancelar_agendamento else data_agendada.isoformat()
-    valor_hora=None if cancelar_agendamento else hora_agendada.isoformat()
-    try:
-     confirmado=DB.table('veiculos').update({'data_revisao_agendada':valor_agendamento,'hora_revisao_agendada':valor_hora,'atualizado_em':now()}).eq('placa',v['placa']).execute()
-     if not confirmado.data or confirmado.data[0].get('data_revisao_agendada')!=valor_agendamento or confirmado.data[0].get('hora_revisao_agendada')!=valor_hora:
-      st.error('Não foi possível confirmar o agendamento. Atualize e tente novamente.')
-     else:
-      st.session_state['aviso_agendamento_revisao']='Agendamento cancelado.' if cancelar_agendamento else 'Agendamento da próxima revisão salvo.'
-      st.rerun()
-    except Exception:
-     st.error('Não foi possível salvar o agendamento. Tente novamente.')
-  if st.session_state.get('aviso_agendamento_revisao'):
-   st.success(st.session_state.pop('aviso_agendamento_revisao'))
   st.markdown('### ✏️ Cadastro / correção da última revisão')
   st.caption('Esta opção corrige o cadastro. Para encerrar um agendamento após realizar o serviço, use Confirmar conclusão.')
   with st.form('rev_'+v['placa']):
