@@ -52,8 +52,22 @@ def revision_appointment_banner(v):
 
 def revision(v):
  if v.get('km_ultima_revisao') is None or v.get('km_atual') is None:return None,None,0
- start=int(v.get('km_ultima_revisao') or 0); cur=int(v.get('km_atual') or 0); target=start+10000; left=target-cur; pct=max(0,min(100,round(((cur-start)/10000)*100)))
+ interval=int(v.get('intervalo_revisao') or 10000)
+ start=int(v.get('km_ultima_revisao') or 0); cur=int(v.get('km_atual') or 0); target=start+interval; left=target-cur; pct=max(0,min(100,round(((cur-start)/interval)*100)))
  return target,left,pct
+
+def revision_completion_values(v,completed_date,completed_km):
+ if completed_date is None or completed_date>datetime.now(TZ).date():
+  raise ValueError('Informe a data em que a revisão foi realizada, sem data futura.')
+ last_date=str(v.get('data_ultima_revisao') or '')[:10]
+ if last_date and completed_date.isoformat()<last_date:
+  raise ValueError('A conclusão não pode ser anterior à última revisão. Use a correção do cadastro se necessário.')
+ last_km=v.get('km_ultima_revisao')
+ if completed_km<=0 or (last_km is not None and completed_km<=int(last_km)):
+  raise ValueError('O KM realizado deve ser maior que o da última revisão. Para corrigir um registro, use a opção de correção abaixo.')
+ if v.get('km_atual') is None or completed_km>int(v['km_atual']):
+  raise ValueError('O KM da revisão não pode superar o KM atual. Confira o hodômetro no cadastro do veículo.')
+ return {'data_ultima_revisao':completed_date.isoformat(),'km_ultima_revisao':int(completed_km),'data_revisao_agendada':None,'hora_revisao_agendada':None}
 def load():
  vs=DB.table('veiculos').select('*').order('placa').execute().data or []
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
@@ -246,11 +260,38 @@ elif view=='admin':
   else:rclass='';rbig=km(left);rsmall='KM PARA REVISÃO'
   st.markdown(f"<div class='revcard'><div class='revgrid'><div><div class='plate'>{esc(v['placa'])}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b><br>Próxima revisão: <b>{km(target) if target is not None else '—'}</b></div></div><div class='remain {rclass}'>{rsmall}<b>{rbig}</b></div></div></div>",unsafe_allow_html=True)
   st.markdown(revision_appointment_banner(v),unsafe_allow_html=True)
+  aviso=st.session_state.pop('aviso_conclusao_revisao',None)
+  if aviso:st.success(aviso)
+  st.markdown('### ✅ Confirmar conclusão da revisão')
+  st.caption('Preencha somente depois de realizar o serviço. A confirmação encerra o agendamento e inicia a contagem a partir do KM realizado.')
+  with st.form('concluir_revisao_'+v['placa']):
+   concluida_data=st.date_input('Data em que a revisão foi realizada',value=None,max_value=datetime.now(TZ).date(),format='DD/MM/YYYY')
+   concluida_km=st.number_input('KM em que a revisão foi realizada',min_value=0,value=None,step=1,placeholder='Informe o KM do serviço')
+   confirma_conclusao=st.checkbox('Confirmo que a revisão foi realizada e conferi a data e o KM.')
+   concluir_revisao=st.form_submit_button('✅ CONFIRMAR CONCLUSÃO DA REVISÃO',type='primary')
+  if concluir_revisao:
+   try:
+    if not confirma_conclusao or concluida_km is None:raise ValueError('Informe a data e o KM e marque a confirmação do serviço realizado.')
+    valores=revision_completion_values(v,concluida_data,int(concluida_km))
+    # One conditional update: never clear a newer appointment or overwrite
+    # another user's revision if this page is stale.
+    consulta=DB.table('veiculos').update({**valores,'atualizado_em':now()}).eq('placa',v['placa'])
+    for campo in ('data_ultima_revisao','km_ultima_revisao','km_atual','data_revisao_agendada','hora_revisao_agendada'):
+     consulta=consulta.is_(campo,'null') if v.get(campo) is None else consulta.eq(campo,v[campo])
+    resultado=consulta.execute()
+    if not resultado.data or any(resultado.data[0].get(campo)!=valor for campo,valor in valores.items()):
+     st.error('O cadastro mudou ou a conclusão não pôde ser confirmada. Atualize a tela e confira antes de tentar novamente.')
+    else:
+     proxima=int(concluida_km)+int(v.get('intervalo_revisao') or 10000)
+     st.session_state['aviso_conclusao_revisao']=f'Revisão concluída em {concluida_data.strftime("%d/%m/%Y")} aos {km(concluida_km)}. Agendamento encerrado. Próxima revisão: {km(proxima)}.'
+     st.rerun()
+   except ValueError as e:st.error(str(e))
+   except Exception:st.error('Não foi possível registrar a conclusão. Confira o cadastro e tente novamente.')
   st.markdown("### 📅 Agendamento da próxima revisão")
   with st.form('agendar_revisao_'+v['placa']):
    data_agendada=st.date_input('Data agendada da próxima revisão',value=revision_appointment_date(v),format='DD/MM/YYYY',key='data_agendamento_'+v['placa'])
    hora_agendada=st.time_input('Horário agendado da revisão',value=revision_appointment_time(v),step=60,key='hora_agendamento_'+v['placa'])
-   st.caption('Data e hora aparecerão em destaque para quem for usar este veículo. Horário de Brasília.')
+   st.caption('Data e hora aparecerão em destaque para quem for usar este veículo. Horário de Brasília. Cancelar apenas desmarca; para serviço realizado, confirme a conclusão acima.')
    salvar_agendamento=st.form_submit_button('💾 SALVAR AGENDAMENTO')
    cancelar_agendamento=st.form_submit_button('CANCELAR AGENDAMENTO',disabled=revision_appointment_date(v) is None)
   if salvar_agendamento or cancelar_agendamento:
@@ -270,8 +311,10 @@ elif view=='admin':
      st.error('Não foi possível salvar o agendamento. Tente novamente.')
   if st.session_state.get('aviso_agendamento_revisao'):
    st.success(st.session_state.pop('aviso_agendamento_revisao'))
-  with st.form('rev'):
-   dr=st.date_input('Data da última revisão',value=dt(v.get('data_ultima_revisao')).date() if dt(v.get('data_ultima_revisao')) else datetime.now(TZ).date()); raw_last=v.get('km_ultima_revisao'); default_last=int(raw_last) if raw_last is not None else int(v.get('km_atual') or 0); kr=st.number_input('KM da última revisão',min_value=0,value=default_last,step=1); st.caption(f'Próxima revisão: {km(int(kr)+10000)}'); save=st.form_submit_button('💾 SALVAR / CORRIGIR ÚLTIMA REVISÃO')
+  st.markdown('### ✏️ Cadastro / correção da última revisão')
+  st.caption('Esta opção corrige o cadastro. Para encerrar um agendamento após realizar o serviço, use Confirmar conclusão.')
+  with st.form('rev_'+v['placa']):
+   dr=st.date_input('Data da última revisão',value=datetime.strptime(str(v['data_ultima_revisao'])[:10],'%Y-%m-%d').date() if v.get('data_ultima_revisao') else datetime.now(TZ).date()); raw_last=v.get('km_ultima_revisao'); default_last=int(raw_last) if raw_last is not None else int(v.get('km_atual') or 0); kr=st.number_input('KM da última revisão',min_value=0,value=default_last,step=1); st.caption(f'Próxima revisão: {km(int(kr)+int(v.get("intervalo_revisao") or 10000))}'); save=st.form_submit_button('💾 SALVAR / CORRIGIR ÚLTIMA REVISÃO')
   if save:
    DB.table('veiculos').update({'data_ultima_revisao':dr.isoformat(),'km_ultima_revisao':int(kr),'atualizado_em':now()}).eq('placa',v['placa']).execute(); st.success('Revisão atualizada.'); st.rerun()
  elif tab=='historico':
@@ -308,5 +351,6 @@ elif view=='admin':
       elif v['placa'] in opened:st.error('Este veículo está em uso. Informe o KM no retorno da viagem.')
       else:
        DB.table('veiculos').update({'km_atual':int(current),'atualizado_em':now()}).eq('placa',v['placa']).execute();st.success('KM atualizado.');st.rerun()
+
 
 
