@@ -74,7 +74,8 @@ def revision_usage_banner(v):
  else:
   bg,border,fg='#dcfce7','#16a34a','#166534'
   label='✓ REVISÃO EM DIA'; detail=f'Faltam {km(left)}'; extra=f'Revisão aos {km(target)}'
- return f"<div role='note' style='margin:8px 0;padding:10px;border:2px solid {border};border-radius:10px;background:{bg};color:{fg};line-height:1.35;overflow-wrap:anywhere'><div style='font-size:12px;font-weight:900'>{label}</div><div style='font-size:clamp(16px,4vw,24px);font-weight:950;margin:4px 0'>{detail}</div><div style='font-size:11px'>{extra}</div><div style='font-size:10px'>KM registrado: {km(v.get("km_atual"))}</div></div>"
+ warning="<div role='alert' style='margin-top:8px;padding:9px;border:2px solid #dc2626;border-radius:8px;background:#fff;color:#991b1b;font-size:13px;font-weight:950'>⚠ AVISE IMEDIATAMENTE À LIDERANÇA</div>" if left is not None and left<1000 else ''
+ return f"<div role='note' style='margin:8px 0;padding:10px;border:2px solid {border};border-radius:10px;background:{bg};color:{fg};line-height:1.35;overflow-wrap:anywhere'><div style='font-size:12px;font-weight:900'>{label}</div><div style='font-size:clamp(16px,4vw,24px);font-weight:950;margin:4px 0'>{detail}</div><div style='font-size:11px'>{extra}</div><div style='font-size:10px'>KM registrado: {km(v.get("km_atual"))}</div>{warning}</div>"
 
 def revision_completion_values(v,completed_date,completed_km):
  if completed_date is None or completed_date>datetime.now(TZ).date():
