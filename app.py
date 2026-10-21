@@ -86,9 +86,10 @@ def revision_completion_values(v,completed_date,completed_km):
  last_km=v.get('km_ultima_revisao')
  if completed_km<=0 or (last_km is not None and completed_km<=int(last_km)):
   raise ValueError('O KM realizado deve ser maior que o da última revisão. Para corrigir um registro, use a opção de correção abaixo.')
- if v.get('km_atual') is None or completed_km>int(v['km_atual']):
-  raise ValueError('O KM da revisão não pode superar o KM atual. Confira o hodômetro no cadastro do veículo.')
- return {'data_ultima_revisao':completed_date.isoformat(),'km_ultima_revisao':int(completed_km),'data_revisao_agendada':None,'hora_revisao_agendada':None}
+ # The service reading is confirmed by the administrator and may be newer
+ # than the last trip. Preserve a higher odometer when recording past work.
+ current_km=max(int(v.get('km_atual') or 0),int(completed_km))
+ return {'data_ultima_revisao':completed_date.isoformat(),'km_ultima_revisao':int(completed_km),'km_atual':current_km,'data_revisao_agendada':None,'hora_revisao_agendada':None}
 def load():
  vs=DB.table('veiculos').select('*').order('placa').execute().data or []
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
@@ -299,6 +300,7 @@ elif view=='admin':
    tem_agendamento=revision_appointment_date(v) is not None
    if not tem_agendamento:st.caption('Salve o agendamento para habilitar a confirmação da conclusão.')
    st.caption('Depois de realizar o serviço, informe a data e o KM reais. A confirmação encerra este agendamento e inicia a contagem para a próxima revisão.')
+   st.caption('Se o KM da revisão for maior que o KM cadastrado, a confirmação também atualizará o KM atual do veículo. Um KM atual maior será mantido.')
    concluida_data=st.date_input('Data em que a revisão foi realizada',value=None,max_value=datetime.now(TZ).date(),format='DD/MM/YYYY',disabled=not tem_agendamento)
    concluida_km=st.number_input('KM em que a revisão foi realizada',min_value=0,value=None,step=1,placeholder='Informe o KM do serviço',disabled=not tem_agendamento)
    confirma_conclusao=st.checkbox('Confirmo que a revisão foi realizada e conferi a data e o KM.',disabled=not tem_agendamento)
