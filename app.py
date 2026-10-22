@@ -58,6 +58,14 @@ def revision(v):
  start=int(v.get('km_ultima_revisao') or 0); cur=int(v.get('km_atual') or 0); target=start+interval; left=target-cur; pct=max(0,min(100,round(((cur-start)/interval)*100)))
  return target,left,pct
 
+def revision_usage_blocked(v,reading=None):
+ checked=dict(v)
+ if reading is not None:checked['km_atual']=max(int(v.get('km_atual') or 0),int(reading))
+ _,left,_=revision(checked)
+ return left is not None and left<=1000
+
+REVISION_BLOCK_MESSAGE='🚫 VEÍCULO BLOQUEADO — REVISÃO URGENTE. Faltam 1.000 km ou menos para a revisão, ou ela já venceu. Avise imediatamente à liderança. Novas saídas serão liberadas após registrar a revisão realizada.'
+
 def revision_usage_banner(v):
  target,left,_=revision(v)
  if target is None:
@@ -68,13 +76,16 @@ def revision_usage_banner(v):
   label='⚠ REVISÃO VENCIDA'
   detail=f'{km(abs(left))} além do limite' if left<0 else 'Limite de KM atingido'
   extra=f'Revisão aos {km(target)}'
+ elif left<=1000:
+  bg,border,fg='#fee2e2','#dc2626','#991b1b'
+  label='🚫 VEÍCULO BLOQUEADO · REVISÃO URGENTE'; detail=f'Faltam {km(left)}'; extra=f'Revisão aos {km(target)}'
  elif left<=2000:
   bg,border,fg='#fff4cc','#f59e0b','#78350f'
   label='⚠ REVISÃO PRÓXIMA'; detail=f'Faltam {km(left)}'; extra=f'Revisão aos {km(target)}'
  else:
   bg,border,fg='#dcfce7','#16a34a','#166534'
   label='✓ REVISÃO EM DIA'; detail=f'Faltam {km(left)}'; extra=f'Revisão aos {km(target)}'
- warning="<div role='alert' style='margin-top:8px;padding:9px;border:2px solid #dc2626;border-radius:8px;background:#fff;color:#991b1b;font-size:13px;font-weight:950'>⚠ AVISE IMEDIATAMENTE À LIDERANÇA</div>" if left is not None and left<1000 else ''
+ warning=f"<div role='alert' style='margin-top:8px;padding:9px;border:2px solid #dc2626;border-radius:8px;background:#fff;color:#991b1b;font-size:13px;font-weight:950'>{REVISION_BLOCK_MESSAGE}</div>" if revision_usage_blocked(v) else ''
  return f"<div role='note' style='margin:8px 0;padding:10px;border:2px solid {border};border-radius:10px;background:{bg};color:{fg};line-height:1.35;overflow-wrap:anywhere'><div style='font-size:12px;font-weight:900'>{label}</div><div style='font-size:clamp(16px,4vw,24px);font-weight:950;margin:4px 0'>{detail}</div><div style='font-size:11px'>{extra}</div><div style='font-size:10px'>KM registrado: {km(v.get("km_atual"))}</div>{warning}</div>"
 
 def revision_completion_values(v,completed_date,completed_km):
@@ -133,6 +144,14 @@ def confirmar_km_inicial(placa,destino,ocupantes,km_inicial,condutor):
  st.markdown(f"**KM inicial informado:** {km(km_inicial)}")
  confirmar,corrigir=st.columns(2)
  if confirmar.button('✅ SIM, REGISTRAR',key='confirmar_km_inicial',use_container_width=True,type='primary'):
+  try:
+   latest=DB.table('veiculos').select('*').eq('placa',placa).limit(1).execute().data or []
+  except Exception:
+   st.error('Não foi possível conferir a revisão. Atualize a tela e tente novamente.'); return
+  if not latest:
+   st.error('Veículo não encontrado. Atualize a tela.'); return
+  if revision_usage_blocked(latest[0],km_inicial):
+   st.error(REVISION_BLOCK_MESSAGE); return
   result=DB.table('movimentacoes').insert({'placa':placa,'destino':destino,'pessoas':ocupantes,'condutor':condutor.strip(),'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}).execute()
   DB.table('veiculos').update({'km_atual':int(km_inicial),'atualizado_em':now()}).eq('placa',placa).execute()
   if st.session_state.get('native_android') and result.data:
@@ -207,7 +226,9 @@ if view in ('vehicles','out','return'):
   native_suffix='&unidade='+UNIT+('&native=android' if st.session_state.get('native_android') else '')
   for v in items:
    m=opened.get(v['placa']); busyv=bool(m); details=(f"<div class='use'>👤 <b>{esc(m.get('pessoas'))}</b><br>📍 {esc(m.get('destino'))}<br>◷ {clock(m.get('data_hora_saida'))} · {duration(m.get('data_hora_saida'))}</div>" if m else f"<div class='info'>🚗 KM atual<br><b>{km(v.get('km_atual'))}</b></div>")
-   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{revision_usage_banner(v)}{revision_appointment_banner(v)}{details}</div></div><a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a></div>")
+   action=f"<a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a>"
+   if not busyv and revision_usage_blocked(v):action="<div class='action' role='status' aria-disabled='true' style='background:#991b1b'>🚫 BLOQUEADO · REVISÃO URGENTE</div>"
+   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{revision_usage_banner(v)}{revision_appointment_banner(v)}{details}</div></div>{action}</div>")
   st.markdown("<div class='grid'>"+''.join(cards)+"</div>",unsafe_allow_html=True)
  elif view=='out':
   v=next((x for x in vs if x['placa']==plate),None)
@@ -216,6 +237,8 @@ if view in ('vehicles','out','return'):
   st.markdown("<div class='title'>Registrar Saída</div>",unsafe_allow_html=True)
   st.markdown(f"<div class='box'><div class='heroimg'><img src='{image(v.get('foto'))}'></div><div class='summary'><div><div class='plate'>{esc(plate)}</div><div class='model'>{esc(v.get('modelo'))}</div></div><div class='right'>KM ATUAL<br><b>{km(v.get('km_atual'))}</b></div></div></div><div class='spacer'></div>",unsafe_allow_html=True)
   st.markdown(revision_usage_banner(v)+revision_appointment_banner(v),unsafe_allow_html=True)
+  if revision_usage_blocked(v):
+   st.error(REVISION_BLOCK_MESSAGE); st.stop()
   with st.form('saida'):
    st.markdown("<div class='fieldcallout'><div class='fieldtitle'>📍 DESTINO — PARA ONDE O VEÍCULO ESTÁ INDO?</div><div class='fieldhint'>Informe o local ou a finalidade do deslocamento.</div></div>",unsafe_allow_html=True)
    dest=st.text_input('Destino',placeholder='Ex.: Portaria Leste, Suzano, Buscar mecânico',label_visibility='collapsed')
@@ -224,7 +247,8 @@ if view in ('vehicles','out','return'):
    driver=st.text_input('👤 CONDUTOR — QUEM ESTÁ DIRIGINDO?',placeholder='Nome do condutor')
    ki=st.number_input('🚗 KM inicial',min_value=int(v.get('km_atual') or 0),value=int(v.get('km_atual') or 0),step=1); save=st.form_submit_button('➤ REGISTRAR SAÍDA')
   if save:
-   if v.get('km_atual') is None and int(ki)<=0:st.error('Informe o KM atual do hodômetro para iniciar o controle deste veículo.')
+   if revision_usage_blocked(v,ki):st.error(REVISION_BLOCK_MESSAGE)
+   elif v.get('km_atual') is None and int(ki)<=0:st.error('Informe o KM atual do hodômetro para iniciar o controle deste veículo.')
    elif not dest.strip() or not people.strip() or not driver.strip():st.error('Informe o DESTINO, os OCUPANTES e o CONDUTOR antes de registrar a saída.')
    else:
     confirmar_km_inicial(plate,dest.strip(),people.strip(),int(ki),driver.strip())
