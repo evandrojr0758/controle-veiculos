@@ -2,7 +2,7 @@ import streamlit as st
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
-import base64, html
+import base64, html, re
 from urllib.parse import urlencode
 from gps_bridge import gps_suggestion
 from fleet_units import UNITS, resolve_unit, scope_fleet, route_params
@@ -105,6 +105,30 @@ def load():
  vs=DB.table('veiculos').select('*').order('placa').execute().data or []
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
  return vs,{m['placa']:m for m in ms}
+
+def vehicle_registration_values(plate,model,unit,reading,vehicles=()):
+ normalized=re.sub(r'[\s-]','',plate).upper()
+ if not re.fullmatch(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}',normalized):
+  raise ValueError('Informe uma placa válida: ABC1234 ou ABC1D23.')
+ if not model.strip():raise ValueError('Informe o modelo do veículo.')
+ if unit not in ('ARA','BA'):raise ValueError('Selecione a unidade do veículo.')
+ if reading is None or int(reading)<0 or int(reading)>2147483647:
+  raise ValueError('Informe um KM inicial válido, igual ou maior que zero.')
+ if any(re.sub(r'[\s-]','',v['placa']).upper()==normalized for v in vehicles):
+  raise ValueError('Esta placa já está cadastrada. Confira os veículos de todas as unidades.')
+ return {'placa':normalized,'modelo':model.strip().upper(),'unidade':unit,'km_atual':int(reading)}
+
+def register_vehicle(values):
+ try:
+  result=DB.table('veiculos').insert(values).execute()
+ except Exception as error:
+  if str(getattr(error,'code',''))=='23505':
+   raise ValueError('Esta placa já está cadastrada. Atualize a lista de veículos.') from error
+  raise
+ if not result.data or any(result.data[0].get(key)!=value for key,value in values.items()):
+  raise RuntimeError('Cadastro não confirmado pelo banco de dados.')
+ return result.data[0]
+
 def editar_km_inicial_em_uso(m,prefixo):
  st.markdown('**✏️ Corrigir KM inicial da viagem em uso**')
  with st.form(f"corrigir_km_inicial_{prefixo}_{m['id']}"):
@@ -295,7 +319,7 @@ elif view=='admin':
  if c1.button('🔧 REVISÕES',use_container_width=True,type='primary' if tab=='revisao' else 'secondary'):setview('admin',tab='revisao')
  if c2.button('📋 HISTÓRICO',use_container_width=True,type='primary' if tab=='historico' else 'secondary'):setview('admin',tab='historico')
  if c3.button('🚙 VEÍCULOS',use_container_width=True,type='primary' if tab=='veiculos' else 'secondary'):setview('admin',tab='veiculos')
- if not vs:
+ if not vs and tab!='veiculos':
   st.info('Nenhum veículo cadastrado nesta unidade.'); st.stop()
  if tab=='revisao':
   st.markdown("<div class='title'>Controle de revisão</div>",unsafe_allow_html=True)
@@ -388,6 +412,27 @@ elif view=='admin':
     st.markdown('</div>',unsafe_allow_html=True)
  else:
   st.markdown("<div class='title'>Cadastro dos veículos</div>",unsafe_allow_html=True)
+  notice=st.session_state.pop('vehicle_registered',None)
+  if notice:st.success(notice)
+  with st.expander('➕ ADICIONAR VEÍCULO',expanded=True):
+   with st.form('new_vehicle',clear_on_submit=False):
+    new_plate=st.text_input('Placa',placeholder='ABC1D23',max_chars=10)
+    new_model=st.text_input('Modelo',placeholder='Ex.: FIAT STRADA',max_chars=120)
+    new_unit=st.selectbox('Unidade do novo veículo',['ARA','BA'],index=0 if UNIT!='BA' else 1,format_func=lambda key:UNITS[key])
+    new_reading=st.number_input('KM inicial do hodômetro',min_value=0,max_value=2147483647,value=None,step=1,placeholder='Informe o KM atual')
+    st.caption('Depois do cadastro, informe a última revisão na aba Revisões.')
+    add_vehicle=st.form_submit_button('💾 CADASTRAR VEÍCULO',type='primary')
+   if add_vehicle:
+    try:
+     values=vehicle_registration_values(new_plate,new_model,new_unit,new_reading,all_vs)
+     register_vehicle(values)
+    except ValueError as error:st.error(str(error))
+    except Exception:st.error('Não foi possível confirmar o cadastro. Atualize a lista antes de tentar novamente.')
+    else:
+     st.session_state['vehicle_registered']=f"Veículo {values['placa']} cadastrado em {UNITS[new_unit]}."
+     if UNIT!='TODAS':UNIT=new_unit
+     setview('admin',tab='veiculos')
+  if not vs:st.info('Nenhum veículo cadastrado nesta unidade. Use o formulário acima para adicionar o primeiro.')
   for v in vs:
    st.markdown(f"<div class='history'><b>{esc(v.get('placa'))}</b> · {esc(v.get('modelo'))}<br><b>Unidade: {esc(units_by_plate[v['placa']])}</b><br>KM atual: {km(v.get('km_atual'))}</div>",unsafe_allow_html=True)
    with st.expander(f"Informar / corrigir KM — {v['placa']}"):
