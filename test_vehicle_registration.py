@@ -58,7 +58,7 @@ class VehicleRegistrationTests(unittest.TestCase):
   db=SimpleNamespace(rows=[])
   db.table=lambda name:Query(db,name)
   st.cache_resource.clear()
-  with patch('supabase.create_client',return_value=db):
+  with patch.dict('sys.modules',{'supabase':SimpleNamespace(create_client=lambda *a:db)}):
    at=AppTest.from_file(str(APP))
    at.secrets['SUPABASE_URL']='https://example.supabase.co'
    at.secrets['SUPABASE_KEY']='test-only'
