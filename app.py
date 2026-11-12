@@ -105,7 +105,6 @@ def load():
  vs=DB.table('veiculos').select('*').order('placa').execute().data or []
  ms=DB.table('movimentacoes').select('*').eq('status','EM USO').order('data_hora_saida',desc=True).execute().data or []
  return vs,{m['placa']:m for m in ms}
-
 def vehicle_registration_values(plate,model,unit,reading,vehicles=()):
  normalized=re.sub(r'[\s-]','',plate).upper()
  if not re.fullmatch(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}',normalized):
@@ -128,6 +127,22 @@ def register_vehicle(values):
  if not result.data or any(result.data[0].get(key)!=value for key,value in values.items()):
   raise RuntimeError('Cadastro não confirmado pelo banco de dados.')
  return result.data[0]
+
+
+def vehicle_edit_values(original,plate,model,unit,vehicles=()):
+ values=vehicle_registration_values(plate,model,unit,original.get('km_atual') or 0,
+                                    [v for v in vehicles if v['placa']!=original['placa']])
+ return {key:values[key] for key in ('placa','modelo','unidade')}
+
+def edit_vehicle(original,values):
+ response=DB.rpc('editar_cadastro_veiculo',{
+  'p_placa_original':original['placa'],'p_placa':values['placa'],
+  'p_modelo':values['modelo'],'p_unidade':values['unidade'],
+  'p_atualizado_em':original.get('atualizado_em')}).execute()
+ result=response.data
+ if not isinstance(result,dict) or any(result.get(key)!=value for key,value in values.items()):
+  raise RuntimeError('Edição não confirmada. Atualize a tela antes de tentar novamente.')
+ return result
 
 def editar_km_inicial_em_uso(m,prefixo):
  st.markdown('**✏️ Corrigir KM inicial da viagem em uso**')
@@ -427,7 +442,10 @@ elif view=='admin':
      values=vehicle_registration_values(new_plate,new_model,new_unit,new_reading,all_vs)
      register_vehicle(values)
     except ValueError as error:st.error(str(error))
-    except Exception:st.error('Não foi possível confirmar o cadastro. Atualize a lista antes de tentar novamente.')
+    except Exception as error:
+     if str(getattr(error,'code','')) in ('42501','PGRST301'):
+      st.error('O cadastro de novos veículos ainda aguarda liberação do responsável pelo sistema.')
+     else:st.error('Não foi possível confirmar o cadastro. Atualize a lista antes de tentar novamente.')
     else:
      st.session_state['vehicle_registered']=f"Veículo {values['placa']} cadastrado em {UNITS[new_unit]}."
      if UNIT!='TODAS':UNIT=new_unit
@@ -435,6 +453,23 @@ elif view=='admin':
   if not vs:st.info('Nenhum veículo cadastrado nesta unidade. Use o formulário acima para adicionar o primeiro.')
   for v in vs:
    st.markdown(f"<div class='history'><b>{esc(v.get('placa'))}</b> · {esc(v.get('modelo'))}<br><b>Unidade: {esc(units_by_plate[v['placa']])}</b><br>KM atual: {km(v.get('km_atual'))}</div>",unsafe_allow_html=True)
+   with st.expander(f"✏️ Editar veículo — {v['placa']}"):
+    with st.form('edit_vehicle_'+v['placa']):
+     edit_plate=st.text_input('Placa',value=v['placa'],max_chars=10)
+     edit_model=st.text_input('Modelo',value=v.get('modelo') or '',max_chars=120)
+     edit_unit=st.selectbox('Unidade do veículo',['ARA','BA'],index=['ARA','BA'].index(v.get('unidade','ARA')),format_func=lambda key:UNITS[key])
+     st.caption('A correção da placa mantém o histórico. Para alterar placa ou unidade, finalize as viagens em uso.')
+     save_vehicle=st.form_submit_button('💾 SALVAR ALTERAÇÕES',type='primary')
+    if save_vehicle:
+     try:
+      values=vehicle_edit_values(v,edit_plate,edit_model,edit_unit,all_vs)
+      edit_vehicle(v,values)
+     except ValueError as error:st.error(str(error))
+     except Exception as error:st.error(getattr(error,'message','Não foi possível salvar. Atualize a tela e tente novamente.'))
+     else:
+      st.session_state['vehicle_registered']=f"Veículo {values['placa']} atualizado."
+      if UNIT!='TODAS':UNIT=values['unidade']
+      setview('admin',tab='veiculos')
    with st.expander(f"Informar / corrigir KM — {v['placa']}"):
     if v['placa'] in opened:
      editar_km_inicial_em_uso(opened[v['placa']],'cadastro')
