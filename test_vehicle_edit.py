@@ -46,6 +46,16 @@ class VehicleEditTests(unittest.TestCase):
     with self.assertRaises(RuntimeError):
      self.ns['edit_vehicle'](self.vehicle,values)
 
+ def test_photo_and_metadata_use_one_atomic_operation(self):
+  values = {'placa':'ABC1D23','modelo':'NOVO','unidade':'ARA','foto':'data:image/png;base64,TEST'}
+  db = MagicMock()
+  self.ns['DB'] = db
+  db.rpc.return_value.execute.return_value = SimpleNamespace(data={**self.vehicle,**values})
+  self.ns['edit_vehicle'](self.vehicle,values)
+  self.assertEqual(db.rpc.call_args.args[0],'editar_cadastro_veiculo_com_foto')
+  self.assertEqual(db.rpc.call_args.args[1]['p_foto'],values['foto'])
+  db.table.assert_not_called()
+
  def test_form_edits_vehicle_with_mock_database(self):
   import streamlit as st
   from streamlit.testing.v1 import AppTest

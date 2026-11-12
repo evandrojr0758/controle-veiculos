@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_client
 import base64, html, re
 from urllib.parse import urlencode
+from vehicle_photos import remove_background, photo_bytes, MAX_UPLOAD_BYTES
 from gps_bridge import gps_suggestion
 from fleet_units import UNITS, resolve_unit, scope_fleet, route_params
 
@@ -18,8 +19,32 @@ def km(x):
  return f"{int(x or 0):,}".replace(',','.')+' km'
 def now(): return datetime.now(TZ).isoformat()
 def image(name):
+ if photo_bytes(name) is not None:return name
  try:return ('data:image/jpeg;base64,' if str(name).lower().endswith(('.jpg','.jpeg')) else 'data:image/png;base64,')+base64.b64encode((ASSETS/name).read_bytes()).decode()
  except:return ''
+
+@st.cache_data(show_spinner=False, max_entries=8, ttl=600)
+def process_vehicle_photo(raw):
+ return remove_background(raw)
+
+def vehicle_photo_input(label,key,current=None):
+ uploaded=st.file_uploader(label,type=['jpg','jpeg','png','webp'],key=key,
+                           help='O fundo é removido automaticamente. Envie uma foto de até 10 MB.')
+ if uploaded is None:
+  if current and image(current):st.image(image(current),width=220)
+  return None,True
+ if uploaded.size>MAX_UPLOAD_BYTES:
+  st.error('Envie uma foto de até 10 MB.')
+  return None,False
+ try:
+  with st.spinner('Removendo o fundo da foto...'):
+   processed=process_vehicle_photo(uploaded.getvalue())
+ except ValueError as error:
+  st.error(str(error))
+  return None,False
+ st.image(photo_bytes(processed),caption='Foto sem fundo — será salva com o veículo.',width=260)
+ return processed,True
+
 def dt(x):
  try:return datetime.fromisoformat(str(x).replace('Z','+00:00')).astimezone(TZ)
  except:return None
@@ -135,10 +160,14 @@ def vehicle_edit_values(original,plate,model,unit,vehicles=()):
  return {key:values[key] for key in ('placa','modelo','unidade')}
 
 def edit_vehicle(original,values):
- response=DB.rpc('editar_cadastro_veiculo',{
-  'p_placa_original':original['placa'],'p_placa':values['placa'],
-  'p_modelo':values['modelo'],'p_unidade':values['unidade'],
-  'p_atualizado_em':original.get('atualizado_em')}).execute()
+ params={'p_placa_original':original['placa'],'p_placa':values['placa'],
+         'p_modelo':values['modelo'],'p_unidade':values['unidade'],
+         'p_atualizado_em':original.get('atualizado_em')}
+ rpc_name='editar_cadastro_veiculo'
+ if 'foto' in values:
+  params['p_foto']=values['foto']
+  rpc_name='editar_cadastro_veiculo_com_foto'
+ response=DB.rpc(rpc_name,params).execute()
  result=response.data
  if not isinstance(result,dict) or any(result.get(key)!=value for key,value in values.items()):
   raise RuntimeError('Edição não confirmada. Atualize a tela antes de tentar novamente.')
@@ -430,16 +459,20 @@ elif view=='admin':
   notice=st.session_state.pop('vehicle_registered',None)
   if notice:st.success(notice)
   with st.expander('➕ ADICIONAR VEÍCULO',expanded=True):
+   photo_version=st.session_state.get('new_photo_version',0)
+   new_photo,photo_ok=vehicle_photo_input('📷 Foto do veículo (opcional)','new_vehicle_photo_'+str(photo_version))
    with st.form('new_vehicle',clear_on_submit=False):
     new_plate=st.text_input('Placa',placeholder='ABC1D23',max_chars=10)
     new_model=st.text_input('Modelo',placeholder='Ex.: FIAT STRADA',max_chars=120)
     new_unit=st.selectbox('Unidade do novo veículo',['ARA','BA'],index=0 if UNIT!='BA' else 1,format_func=lambda key:UNITS[key])
     new_reading=st.number_input('KM inicial do hodômetro',min_value=0,max_value=2147483647,value=None,step=1,placeholder='Informe o KM atual')
     st.caption('Depois do cadastro, informe a última revisão na aba Revisões.')
-    add_vehicle=st.form_submit_button('💾 CADASTRAR VEÍCULO',type='primary')
+    add_vehicle=st.form_submit_button('💾 CADASTRAR VEÍCULO',type='primary',disabled=not photo_ok)
    if add_vehicle:
     try:
      values=vehicle_registration_values(new_plate,new_model,new_unit,new_reading,all_vs)
+     if not photo_ok:raise ValueError('Envie uma foto válida antes de salvar.')
+     if new_photo:values['foto']=new_photo
      register_vehicle(values)
     except ValueError as error:st.error(str(error))
     except Exception as error:
@@ -447,6 +480,7 @@ elif view=='admin':
       st.error('O cadastro de novos veículos ainda aguarda liberação do responsável pelo sistema.')
      else:st.error('Não foi possível confirmar o cadastro. Atualize a lista antes de tentar novamente.')
     else:
+     st.session_state['new_photo_version']=photo_version+1
      st.session_state['vehicle_registered']=f"Veículo {values['placa']} cadastrado em {UNITS[new_unit]}."
      if UNIT!='TODAS':UNIT=new_unit
      setview('admin',tab='veiculos')
@@ -454,15 +488,18 @@ elif view=='admin':
   for v in vs:
    st.markdown(f"<div class='history'><b>{esc(v.get('placa'))}</b> · {esc(v.get('modelo'))}<br><b>Unidade: {esc(units_by_plate[v['placa']])}</b><br>KM atual: {km(v.get('km_atual'))}</div>",unsafe_allow_html=True)
    with st.expander(f"✏️ Editar veículo — {v['placa']}"):
+    edit_photo,edit_photo_ok=vehicle_photo_input('📷 Enviar / trocar foto','edit_photo_'+v['placa']+'_'+str(v.get('atualizado_em')),v.get('foto'))
     with st.form('edit_vehicle_'+v['placa']):
      edit_plate=st.text_input('Placa',value=v['placa'],max_chars=10)
      edit_model=st.text_input('Modelo',value=v.get('modelo') or '',max_chars=120)
      edit_unit=st.selectbox('Unidade do veículo',['ARA','BA'],index=['ARA','BA'].index(v.get('unidade','ARA')),format_func=lambda key:UNITS[key])
      st.caption('A correção da placa mantém o histórico. Para alterar placa ou unidade, finalize as viagens em uso.')
-     save_vehicle=st.form_submit_button('💾 SALVAR ALTERAÇÕES',type='primary')
+     save_vehicle=st.form_submit_button('💾 SALVAR ALTERAÇÕES',type='primary',disabled=not edit_photo_ok)
     if save_vehicle:
      try:
       values=vehicle_edit_values(v,edit_plate,edit_model,edit_unit,all_vs)
+      if not edit_photo_ok:raise ValueError('Envie uma foto válida antes de salvar.')
+      if edit_photo:values['foto']=edit_photo
       edit_vehicle(v,values)
      except ValueError as error:st.error(str(error))
      except Exception as error:st.error(getattr(error,'message','Não foi possível salvar. Atualize a tela e tente novamente.'))
