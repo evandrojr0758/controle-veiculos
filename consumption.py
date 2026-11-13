@@ -28,38 +28,63 @@ def report_rows(reports, fleet, unit='TODAS'):
     """Link only exact normalized plates; never guess a vehicle or its unit."""
     by_plate = {normalize_plate(v['placa']): v for v in fleet}
     summaries = []
+    groups = {}
     for report in reports:
         for item in report['veiculos']:
-            vehicle = by_plate.get(normalize_plate(item['placa']))
-            if unit != 'TODAS' and (not vehicle or vehicle.get('unidade', 'ARA') != unit):
-                continue
-            records = item['registros']
-            fuel = [row for row in records if row['combustivel']]
-            liters = round(sum(row['quantidade'] for row in fuel), 3)
-            cost = round(sum(row['valor'] for row in fuel), 2)
-            previous = item['km_anterior']
-            issues = []
-            for record in records:
-                if record['km_atual'] < previous:
-                    issues.append(f"Odômetro diminuiu de {number(previous, 0)} para {number(record['km_atual'], 0)} km em {record['data'][8:10]}/{record['data'][5:7]}.")
-                if record['combustivel'] and record['km_l_informado'] > 30:
-                    issues.append(f"Relatório informa {number(record['km_l_informado'])} km/L em {record['data'][8:10]}/{record['data'][5:7]}; conferir o histórico.")
-                previous = record['km_atual']
-            distance = previous - item['km_anterior'] if records and item['km_anterior'] > 0 else None
-            if distance is not None and distance < 0:
-                distance = None
-            summaries.append({
-                'periodo': report['periodo'], 'placa': item['placa'],
-                'modelo': vehicle.get('modelo') if vehicle else item['modelo'],
-                'unidade': vehicle.get('unidade', 'ARA') if vehicle else None,
-                'vinculado': vehicle is not None, 'litros': liters,
-                'valor': cost, 'abastecimentos': len(fuel), 'km': distance,
-                'outras_compras': round(sum(row['valor'] for row in records if not row['combustivel']), 2),
-                'km_l': distance / liters if liters and distance is not None and not issues else None,
-                'custo_km': cost / distance if distance and liters and not issues else None,
-                'alertas': issues, 'registros': records, 'km_anterior': item['km_anterior'],
-                'km_final': previous, 'origem': report['origem'],
-            })
+            key = (report['periodo'], normalize_plate(item['placa']))
+            group = groups.setdefault(key, {'placa': item['placa'], 'modelo': 'Modelo não informado',
+                                            'registros': [], 'baselines': [], 'seen': set(), 'origens': set()})
+            if item.get('modelo') and item['modelo'] != 'Modelo não informado':
+                group['modelo'] = item['modelo']
+            group['origens'].add(report['origem'])
+            if item.get('km_anterior') and item['km_anterior'] > 0:
+                first_time = min(((r['data'], r['hora']) for r in item['registros']), default=('', ''))
+                group['baselines'].append((first_time, item['km_anterior']))
+            for raw in item['registros']:
+                origin = raw.get('origem') or report['origem']
+                fingerprint = (origin.casefold().strip(), raw['cupom'], raw['produto'], raw['data'],
+                               raw['hora'], raw['quantidade'], raw['valor'])
+                if fingerprint in group['seen']:
+                    continue
+                group['seen'].add(fingerprint)
+                group['registros'].append({**raw, 'origem': origin})
+    for (period, plate), item in groups.items():
+        vehicle = by_plate.get(plate)
+        if unit != 'TODAS' and (not vehicle or vehicle.get('unidade', 'ARA') != unit):
+            continue
+        records = sorted(item['registros'], key=lambda r: (r['data'], r['hora'], r['cupom']))
+        fuel = [row for row in records if row['combustivel']]
+        liters = round(sum(row['quantidade'] for row in fuel), 3)
+        cost = round(sum(row['valor'] for row in fuel), 2)
+        readings = [r['km_atual'] for r in records if r['km_atual'] > 0]
+        initial = min(item['baselines'], key=lambda v: v[0])[1] if item['baselines'] else (readings[0] if readings else None)
+        previous = initial
+        issues = []
+        if not item['baselines'] and readings:
+            issues.append('Sem odômetro anterior ao período; distância entre as leituras disponíveis.')
+        for record in records:
+            reading = record['km_atual']
+            if reading > 0:
+                if previous is not None and reading < previous:
+                    issues.append(f"Odômetro diminuiu de {number(previous, 0)} para {number(reading, 0)} km em {record['data'][8:10]}/{record['data'][5:7]}.")
+                previous = reading
+            if record['combustivel'] and record['km_l_informado'] > 30:
+                issues.append(f"Relatório informa {number(record['km_l_informado'])} km/L em {record['data'][8:10]}/{record['data'][5:7]}; conferir o histórico.")
+        distance = previous - initial if initial is not None and readings and (item['baselines'] or len(readings) > 1) else None
+        if distance is not None and distance < 0:
+            distance = None
+        summaries.append({
+            'periodo': period, 'placa': item['placa'],
+            'modelo': vehicle.get('modelo') if vehicle else item['modelo'],
+            'unidade': vehicle.get('unidade', 'ARA') if vehicle else None,
+            'vinculado': vehicle is not None, 'litros': liters,
+            'valor': cost, 'abastecimentos': len(fuel), 'km': distance,
+            'outras_compras': round(sum(row['valor'] for row in records if not row['combustivel']), 2),
+            'km_l': distance / liters if liters and distance is not None and not issues else None,
+            'custo_km': cost / distance if distance and liters and not issues else None,
+            'alertas': issues, 'registros': records, 'km_anterior': initial,
+            'km_final': previous, 'origem': ' / '.join(sorted(item['origens'])),
+        })
     return summaries
 
 
@@ -68,7 +93,7 @@ def render_consumption(fleet, unit, unit_labels, db):
     import streamlit as st
 
     st.markdown("<div class='title'>Consumo por veículo</div>", unsafe_allow_html=True)
-    st.caption('Abastecimentos · Histórico de consumo do Posto Trevão')
+    st.caption('Abastecimentos · Consumo consolidado por veículo')
     try:
         reports = load_reports(db)
     except Exception:
@@ -77,6 +102,7 @@ def render_consumption(fleet, unit, unit_labels, db):
     if not reports:
         st.info('Nenhum relatório de consumo disponível para este acesso.')
         return
+    st.caption('Postos: ' + ' · '.join(sorted({r['origem'] for r in reports})))
     periods = sorted({r['periodo'] for r in reports}, reverse=True)
     period = st.selectbox('Período do consumo', periods, format_func=period_label, key='consumption_period')
     all_rows = report_rows(reports, fleet, 'TODAS')
@@ -122,7 +148,7 @@ def render_consumption(fleet, unit, unit_labels, db):
 
     st.markdown('#### Resumo por veículo')
     summary = pd.DataFrame([{
-        'Placa': r['placa'], 'Veículo': r['modelo'],
+        'Placa': r['placa'], 'Veículo': r['modelo'], 'Postos': r['origem'],
         'Unidade': unit_labels.get(r['unidade'], 'Sem vínculo'),
         'Litros': number(r['litros'], 3), 'Combustível (R$)': number(r['valor']),
         'Km registrados*': number(r['km'], 0) if r['km'] is not None else 'Sem leitura',
@@ -156,7 +182,7 @@ def render_consumption(fleet, unit, unit_labels, db):
     st.markdown('#### Histórico do veículo selecionado')
     details = pd.DataFrame([{
         'Data': r['data'][8:10] + '/' + r['data'][5:7] + '/' + r['data'][:4],
-        'Hora': r['hora'], 'Cupom': r['cupom'], 'Produto': r['produto'],
+        'Hora': r['hora'], 'Posto': r['origem'], 'Cupom': r['cupom'], 'Produto': r['produto'],
         'Litros': number(r['quantidade'], 3) if r['combustivel'] else '—',
         'Quantidade de outros itens': '—' if r['combustivel'] else number(r['quantidade'], 0),
         'R$/unidade': number(r['preco_unitario']), 'Valor (R$)': number(r['valor']),
