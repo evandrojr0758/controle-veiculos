@@ -60,6 +60,35 @@ class ConsumptionTests(unittest.TestCase):
         self.assertIsNone(rows[1]['km_l'])
         self.assertIsNone(rows[1]['custo_km'])
 
+    def test_merges_sources_without_duplicate_vehicles_or_distance(self):
+        import copy
+        reports = fixtures()
+        extra = copy.deepcopy(reports[0])
+        extra['origem'] = 'Segundo posto'
+        extra['veiculos'] = [extra['veiculos'][0]]
+        vehicle = extra['veiculos'][0]
+        vehicle['placa'] = 'ABC1D23'
+        vehicle['km_anterior'] = None
+        vehicle['registros'] = [dict(vehicle['registros'][0], hora='18:00', km_atual=1150)]
+        rows = report_rows(reports + [extra, extra, reports[0]], [])
+        selected = next(r for r in rows if r['placa'] == 'ABC-1D23')
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(selected['litros'], 20)
+        self.assertEqual(selected['valor'], 120)
+        self.assertEqual(selected['abastecimentos'], 2)
+        self.assertEqual(selected['km'], 200)
+        self.assertEqual(len(selected['registros']), 3)
+        self.assertEqual(len({r['origem'] for r in selected['registros']}), 2)
+        self.assertFalse(selected['alertas'])
+
+    def test_new_source_without_opening_odometer_uses_available_readings(self):
+        reports = fixtures()
+        reports[0]['veiculos'][0]['km_anterior'] = None
+        selected = report_rows(reports, [])[0]
+        self.assertEqual(selected['km'], 100)
+        self.assertIsNone(selected['km_l'])
+        self.assertTrue(any('Sem odômetro anterior' in message for message in selected['alertas']))
+
     def test_admin_consumption_route(self):
         import streamlit as st
         from streamlit.testing.v1 import AppTest
