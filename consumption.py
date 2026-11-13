@@ -1,5 +1,6 @@
 """Read-only fuel reporting. Source records never update fleet odometers."""
 import re
+import html
 
 MONTHS = {'01': 'Janeiro', '02': 'Fevereiro', '03': 'Março', '04': 'Abril',
           '05': 'Maio', '06': 'Junho', '07': 'Julho', '08': 'Agosto',
@@ -63,7 +64,6 @@ def report_rows(reports, fleet, unit='TODAS'):
 
 
 def render_consumption(fleet, unit, unit_labels, db):
-    import altair as alt
     import pandas as pd
     import streamlit as st
 
@@ -104,17 +104,14 @@ def render_consumption(fleet, unit, unit_labels, db):
         if not ranked:
             st.info('Sem registros para este ranking.')
             return
-        values = pd.DataFrame([{'Veículo': r['placa'], 'Modelo': r['modelo'], 'Valor': r[metric],
-                                'Total': number(r[metric], digits) + (' L' if metric == 'litros' else ' km'),
-                                'Situação': 'Conferir odômetro' if metric == 'km' and r['alertas'] else 'Dados do relatório'} for r in ranked])
-        base = alt.Chart(values).encode(
-            y=alt.Y('Veículo:N', sort=[r['placa'] for r in ranked], title=None,
-                    axis=alt.Axis(labelLimit=110)),
-            x=alt.X('Valor:Q', title=axis, scale=alt.Scale(domain=[0, max(r[metric] for r in ranked) * 1.35])),
-            tooltip=['Veículo:N', 'Modelo:N', 'Total:N', 'Situação:N'])
-        chart = base.mark_bar(color=color, cornerRadiusEnd=4, height=19) + base.mark_text(
-            align='left', dx=5, color='#173d60').encode(text='Total:N')
-        st.altair_chart(chart.properties(height=45 * len(ranked) + 12), use_container_width=True)
+        maximum = max(r[metric] for r in ranked)
+        bars = []
+        for position, row in enumerate(ranked, 1):
+            total = number(row[metric], digits) + (' L' if metric == 'litros' else ' km')
+            label = html.escape(row['placa'])
+            model = html.escape(row['modelo'])
+            bars.append(f"<div style='margin:14px 0'><div style='display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap'><span>{position}º · <b>{label}</b></span><b>{total}</b></div><div style='font-size:12px;color:#60778b'>{model}</div><div role='img' aria-label='{label}: {total}' style='height:13px;background:#e8eff5;border-radius:4px;margin-top:6px;overflow:hidden'><div style='width:{row[metric]/maximum*100:.3f}%;height:100%;background:{color};border-radius:4px'></div></div></div>")
+        st.markdown('<div>'+''.join(bars)+f"<div style='font-size:12px;color:#60778b'>{html.escape(axis)}</div></div>", unsafe_allow_html=True)
 
     left, right = st.columns(2)
     with left:
@@ -145,11 +142,13 @@ def render_consumption(fleet, unit, unit_labels, db):
     current = next(r for r in rows if r['placa'] == selected)
     history = sorted([r for r in scoped if normalize_plate(r['placa']) == normalize_plate(selected)], key=lambda r: r['periodo'])
     st.markdown('#### Gasto mensal · ' + selected)
-    monthly = pd.DataFrame([{'Mês': period_label(r['periodo']), 'Valor': r['valor']} for r in history])
-    chart = alt.Chart(monthly).mark_bar(color='#0868b6', cornerRadiusEnd=4).encode(
-        x=alt.X('Mês:N', sort=[period_label(r['periodo']) for r in history], title=None),
-        y=alt.Y('Valor:Q', title='Combustível (R$)'), tooltip=['Mês:N', alt.Tooltip('Valor:Q', format='.2f', title='R$')])
-    st.altair_chart(chart.properties(height=200), use_container_width=True)
+    maximum = max((r['valor'] for r in history), default=0) or 1
+    monthly_bars = []
+    for row in history:
+        label = html.escape(period_label(row['periodo']))
+        total = 'R$ ' + number(row['valor'])
+        monthly_bars.append(f"<div style='margin:12px 0'><div style='display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap'><span>{label}</span><b>{total}</b></div><div role='img' aria-label='{label}: {total}' style='height:15px;background:#e8eff5;border-radius:4px;margin-top:6px;overflow:hidden'><div style='height:100%;width:{row['valor']/maximum*100:.3f}%;background:#0868b6;border-radius:4px'></div></div></div>")
+    st.markdown('<div>'+''.join(monthly_bars)+'</div>', unsafe_allow_html=True)
     if current['alertas']:
         st.warning('Quilometragem a conferir: ' + ' '.join(current['alertas']))
     if current['km'] is not None:
