@@ -88,6 +88,31 @@ def report_rows(reports, fleet, unit='TODAS'):
     return summaries
 
 
+def monthly_totals(rows):
+    """Compare complete loaded months within the same unit scope."""
+    groups = {}
+    for row in rows:
+        month = groups.setdefault(row['periodo'], {'periodo': row['periodo'], 'litros': 0,
+            'valor': 0, 'abastecimentos': 0, 'km': None, 'veiculos': 0,
+            'veiculos_com_km': 0, 'pendentes_km': 0})
+        month['litros'] += row['litros']
+        month['valor'] += row['valor']
+        month['abastecimentos'] += row['abastecimentos']
+        month['veiculos'] += int(row['abastecimentos'] > 0)
+        if row['km'] is not None:
+            month['km'] = (month['km'] or 0) + row['km']
+            month['veiculos_com_km'] += 1
+        elif row['abastecimentos'] > 0:
+            month['pendentes_km'] += 1
+    for month in groups.values():
+        month['litros'] = round(month['litros'], 3)
+        month['valor'] = round(month['valor'], 2)
+        month['mes'] = period_label(month['periodo'])
+        month['consumo_detalhe'] = 'R$ ' + number(month['valor']) + f" · {month['veiculos']} veículos abastecidos"
+        month['km_detalhe'] = f"{month['veiculos_com_km']} veículos com leitura · {month['pendentes_km']} sem distância"
+    return sorted(groups.values(), key=lambda r: r['periodo'])
+
+
 def render_consumption(fleet, unit, unit_labels, db):
     import pandas as pd
     import streamlit as st
@@ -124,8 +149,9 @@ def render_consumption(fleet, unit, unit_labels, db):
     c2.metric('Litros abastecidos', number(liters, 3) + ' L')
     c3.metric('Abastecimentos', count)
 
-    def ranking(metric, title, axis, color, digits):
-        ranked = sorted([r for r in rows if r[metric] is not None and r[metric] > 0], key=lambda r: r[metric], reverse=True)
+    def ranking(metric, title, axis, color, digits, items=None, label_key='placa', detail_key='modelo'):
+        source = rows if items is None else items
+        ranked = sorted([r for r in source if r[metric] is not None and r[metric] > 0], key=lambda r: r[metric], reverse=True)
         st.markdown('#### ' + title)
         if not ranked:
             st.info('Sem registros para este ranking.')
@@ -134,8 +160,8 @@ def render_consumption(fleet, unit, unit_labels, db):
         bars = []
         for position, row in enumerate(ranked, 1):
             total = number(row[metric], digits) + (' L' if metric == 'litros' else ' km')
-            label = html.escape(row['placa'])
-            model = html.escape(row['modelo'])
+            label = html.escape(row[label_key])
+            model = html.escape(row[detail_key])
             bars.append(f"<div style='margin:14px 0'><div style='display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap'><span>{position}º · <b>{label}</b></span><b>{total}</b></div><div style='font-size:12px;color:#60778b'>{model}</div><div role='img' aria-label='{label}: {total}' style='height:13px;background:#e8eff5;border-radius:4px;margin-top:6px;overflow:hidden'><div style='width:{row[metric]/maximum*100:.3f}%;height:100%;background:{color};border-radius:4px'></div></div></div>")
         st.markdown('<div>'+''.join(bars)+f"<div style='font-size:12px;color:#60778b'>{html.escape(axis)}</div></div>", unsafe_allow_html=True)
 
@@ -145,6 +171,18 @@ def render_consumption(fleet, unit, unit_labels, db):
     with right:
         ranking('km', 'Ranking · Mais rodados', 'Distância registrada (km)', '#198772', 0)
     st.caption('Quilometragem provisória: odômetro anterior do relatório até o último registro, não necessariamente até o último dia do mês. Leituras intermediárias inconsistentes ficam sinalizadas abaixo. Litros abastecidos representam compras de combustível, não uma medição exata do que foi consumido no mês.')
+
+    st.markdown('### Ranking por mês')
+    st.caption('Comparação de todos os meses carregados para a unidade selecionada, independente do período escolhido acima.')
+    months = monthly_totals(scoped)
+    month_liters, month_km = st.columns(2)
+    with month_liters:
+        ranking('litros', 'Meses · Mais litros abastecidos', 'Combustível (L)', '#0868b6', 3,
+                items=months, label_key='mes', detail_key='consumo_detalhe')
+    with month_km:
+        ranking('km', 'Meses · Mais quilômetros rodados', 'Distância registrada (km)', '#198772', 0,
+                items=months, label_key='mes', detail_key='km_detalhe')
+    st.caption('Quilometragens mensais provisórias. A quantidade de veículos e as leituras disponíveis podem variar entre os meses.')
 
     st.markdown('#### Resumo por veículo')
     summary = pd.DataFrame([{
