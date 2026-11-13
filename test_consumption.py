@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
-from consumption import report_rows, load_reports
+from consumption import report_rows, load_reports, monthly_totals
 
 
 def fixtures():
@@ -89,6 +89,24 @@ class ConsumptionTests(unittest.TestCase):
         self.assertIsNone(selected['km_l'])
         self.assertTrue(any('Sem odômetro anterior' in message for message in selected['alertas']))
 
+    def test_month_rankings_keep_metrics_and_missing_distance_separate(self):
+        rows = [
+            {'periodo': '2026-09', 'litros': 50.123, 'valor': 300.74, 'abastecimentos': 2, 'km': 100},
+            {'periodo': '2026-10', 'litros': 20, 'valor': 120, 'abastecimentos': 1, 'km': 300},
+            {'periodo': '2026-10', 'litros': 10, 'valor': 60, 'abastecimentos': 1, 'km': None},
+        ]
+        months = monthly_totals(rows)
+        self.assertEqual(len(months), 2)
+        self.assertEqual(max(months, key=lambda r: r['litros'])['periodo'], '2026-09')
+        self.assertEqual(max(months, key=lambda r: r['km'])['periodo'], '2026-10')
+        self.assertEqual(months[1]['km'], 300)
+        self.assertEqual(months[1]['litros'], 30)
+        self.assertEqual(months[1]['valor'], 180)
+        self.assertEqual(months[1]['veiculos'], 2)
+        self.assertEqual(months[1]['pendentes_km'], 1)
+        missing = monthly_totals([dict(rows[2], periodo='2026-11')])
+        self.assertIsNone(missing[0]['km'])
+
     def test_admin_consumption_route(self):
         import streamlit as st
         from streamlit.testing.v1 import AppTest
@@ -104,6 +122,8 @@ class ConsumptionTests(unittest.TestCase):
             self.assertEqual(app.metric[0].value, 'R$ 240,00')
             self.assertTrue(any('Ranking · Mais abastecidos' in m.value for m in app.markdown))
             self.assertTrue(any('Ranking · Mais rodados' in m.value for m in app.markdown))
+            self.assertTrue(any('Meses · Mais litros abastecidos' in m.value for m in app.markdown))
+            self.assertTrue(any('Meses · Mais quilômetros rodados' in m.value for m in app.markdown))
             self.assertTrue(any("role='img'" in m.value for m in app.markdown))
             app.selectbox[2].set_value('DEF-4G56').run(timeout=30)
             self.assertEqual(len(app.exception), 0, str(app.exception))
