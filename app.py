@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from vehicle_photos import remove_background, photo_bytes, MAX_UPLOAD_BYTES
 from gps_bridge import gps_suggestion
 from fleet_units import UNITS, resolve_unit, scope_fleet, route_params
+from consumption import render_consumption
 
 st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
 BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
@@ -363,9 +364,12 @@ elif view=='admin':
  if c1.button('🔧 REVISÕES',use_container_width=True,type='primary' if tab=='revisao' else 'secondary'):setview('admin',tab='revisao')
  if c2.button('📋 HISTÓRICO',use_container_width=True,type='primary' if tab=='historico' else 'secondary'):setview('admin',tab='historico')
  if c3.button('🚙 VEÍCULOS',use_container_width=True,type='primary' if tab=='veiculos' else 'secondary'):setview('admin',tab='veiculos')
- if not vs and tab!='veiculos':
+ if st.button('⛽ CONSUMO',key='admin_consumo',use_container_width=True,type='primary' if tab=='consumo' else 'secondary'):setview('admin',tab='consumo')
+ if not vs and tab not in ('veiculos','consumo'):
   st.info('Nenhum veículo cadastrado nesta unidade.'); st.stop()
- if tab=='revisao':
+ if tab=='consumo':
+  render_consumption(all_vs,UNIT,UNITS,DB)
+ elif tab=='revisao':
   st.markdown("<div class='title'>Controle de revisão</div>",unsafe_allow_html=True)
   opts={f"{v['placa']} — {v.get('modelo','')} · {units_by_plate[v['placa']]}":v for v in vs}; sel=st.selectbox('Veículo',list(opts)); v=opts[sel]; target,left,pct=revision(v)
   if target is None: rclass=''; rbig='NÃO CADASTRADA'; rsmall='Cadastre a última revisão'
