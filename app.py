@@ -7,15 +7,17 @@ from vehicle_photos import remove_background, photo_bytes, MAX_UPLOAD_BYTES
 from gps_bridge import gps_suggestion
 from fleet_units import UNITS, resolve_unit, scope_fleet, route_params
 from consumption import render_consumption
+from vehicle_access import require_access, secret, session_active
 
 st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
 BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
+NEON_URL=secret('VEICULOS_NEON_DATABASE_URL')
+ACCESS_PASSWORD=secret('VEICULOS_ACCESS_PASSWORD')
+PROTECTED_ACCESS=bool(NEON_URL or ACCESS_PASSWORD)
+if PROTECTED_ACCESS:
+ require_access(ACCESS_PASSWORD)
 @st.cache_resource
-def get_db():
- try:
-  neon_url=st.secrets.get('VEICULOS_NEON_DATABASE_URL')
- except FileNotFoundError:
-  neon_url=None
+def get_db(neon_url=None):
  if neon_url:
   from vehicle_db_neon import NeonVehicles
   return NeonVehicles(neon_url)
@@ -273,7 +275,7 @@ st.markdown('''<style>
 </style>''',unsafe_allow_html=True)
 
 try:
- DB=get_db()
+ DB=get_db(NEON_URL)
  vs,opened=load()
 except Exception:
  st.error('Falha ao conectar ao banco online.'); st.stop()
@@ -319,13 +321,28 @@ if view in ('vehicles','out','return'):
    st.link_button('📲 APLICATIVO ANDROID · KM AUTOMÁTICO', 'https://github.com/evandrojr0758/controle-veiculos/raw/refs/heads/main/downloads/VEICULOS_10_SUL_GPS_v1.apk',use_container_width=True)
   items=[v for v in vs if (v['placa'] in opened)==(flt=='used')]
   cards=[]
+  protected_columns=None
   native_suffix='&unidade='+UNIT+('&native=android' if st.session_state.get('native_android') else '')
-  for v in items:
+  for i,v in enumerate(items):
    m=opened.get(v['placa']); busyv=bool(m); details=(f"<div class='use'>👤 <b>{esc(m.get('pessoas'))}</b><br>📍 {esc(m.get('destino'))}<br>◷ {clock(m.get('data_hora_saida'))} · {duration(m.get('data_hora_saida'))}</div>" if m else f"<div class='info'>🚗 KM atual<br><b>{km(v.get('km_atual'))}</b></div>")
-   action=f"<a class='action {'ret' if busyv else ''}' href='?view={'return' if busyv else 'out'}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{'↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO'}</a>"
-   if not busyv and revision_usage_blocked(v):action="<div class='action' role='status' aria-disabled='true' style='background:#991b1b'>🚫 BLOQUEADO · REVISÃO URGENTE</div>"
-   cards.append(f"<div><div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{revision_usage_banner(v)}{revision_appointment_banner(v)}{details}</div></div>{action}</div>")
-  st.markdown("<div class='grid'>"+''.join(cards)+"</div>",unsafe_allow_html=True)
+   bloqueado=not busyv and revision_usage_blocked(v)
+   label='🚫 BLOQUEADO · REVISÃO URGENTE' if bloqueado else ('↩ REGISTRAR RETORNO' if busyv else '➜ USAR ESTE VEÍCULO')
+   destino='return' if busyv else 'out'
+   card=f"<div class='card'><div class='pic'><img src='{image(v.get('foto'))}'><span class='badge {'orange' if busyv else 'green'}'>{'EM USO' if busyv else 'DISPONÍVEL'}</span></div><div class='body'><div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(v.get('empresa'))} · {esc(units_by_plate[v['placa']])}</div>{revision_usage_banner(v)}{revision_appointment_banner(v)}{details}</div></div>"
+   if PROTECTED_ACCESS:
+    if i%2==0: protected_columns=st.columns(2)
+    with protected_columns[i%2]:
+     st.markdown(card,unsafe_allow_html=True)
+     if st.button(label,key='abrir_veiculo_'+v['placa'],disabled=bloqueado,use_container_width=True):
+      setview(destino,plate=v['placa'])
+   else:
+    if bloqueado:
+     action=f"<div class='action' role='status' aria-disabled='true' style='background:#991b1b'>{label}</div>"
+    else:
+     action=f"<a class='action {'ret' if busyv else ''}' href='?view={destino}&plate={esc(v.get('placa'))}{native_suffix}' target='_self'>{label}</a>"
+    cards.append(f"<div>{card}{action}</div>")
+  if not PROTECTED_ACCESS:
+   st.markdown("<div class='grid'>"+''.join(cards)+"</div>",unsafe_allow_html=True)
  elif view=='out':
   v=next((x for x in vs if x['placa']==plate),None)
   if not v or plate in opened:setview('vehicles',filter='free')
@@ -370,15 +387,26 @@ if view in ('vehicles','out','return'):
     confirmar_km_final(plate,m['id'],initial,int(kf))
 
 elif view=='panel':
- top('PAINEL DA FROTA · TEMPO REAL'); busy=len(opened)
- st.markdown(f"<div class='metrics'><div class='metric'>FROTA<b>{len(vs)}</b></div><div class='metric'>DISPONÍVEIS<b>{len(vs)-busy}</b></div><div class='metric'>EM USO<b>{busy}</b></div></div>",unsafe_allow_html=True)
- panelcards=[]
- for v in vs:
-  m=opened.get(v['placa']); target,left,pct=revision(v); status=(f"<div class='pstatus busy'>● EM USO</div><div class='info'>👤 <b>Com:</b> {esc(m.get('pessoas'))}<br>📍 <b>Destino:</b> {esc(m.get('destino'))}<br>⌛ <b>Tempo em uso:</b> {duration(m.get('data_hora_saida'))}</div>" if m else "<div class='pstatus free'>● DISPONÍVEL</div>")
-  revtxt='Revisão não cadastrada' if target is None else (f'REVISÃO VENCIDA HÁ {km(abs(left))}' if left<0 else f'FALTAM {km(left)}')
-  panelcards.append(f"<div class='panelcard'><div class='panelmain'><img src='{image(v.get('foto'))}'><div>{status}<div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b></div></div></div><div class='revbox'>{revtxt}</div>{revision_appointment_banner(v)}</div>")
- st.markdown("<div class='panelgrid'>"+''.join(panelcards)+"</div>",unsafe_allow_html=True)
- st.markdown("<meta http-equiv='refresh' content='15'>",unsafe_allow_html=True)
+ @st.fragment(run_every=15 if PROTECTED_ACCESS else None)
+ def fleet_panel():
+  if PROTECTED_ACCESS:
+   # A fragment rerun must also check a session that could have expired.
+   if not session_active(secret('VEICULOS_ACCESS_PASSWORD')):
+    st.rerun()
+   panel_vs,panel_opened=scope_fleet(*load(),UNIT)
+  else:
+   panel_vs,panel_opened=vs,opened
+  top('PAINEL DA FROTA · TEMPO REAL'); busy=len(panel_opened)
+  st.markdown(f"<div class='metrics'><div class='metric'>FROTA<b>{len(panel_vs)}</b></div><div class='metric'>DISPONÍVEIS<b>{len(panel_vs)-busy}</b></div><div class='metric'>EM USO<b>{busy}</b></div></div>",unsafe_allow_html=True)
+  panelcards=[]
+  for v in panel_vs:
+   m=panel_opened.get(v['placa']); target,left,pct=revision(v); status=(f"<div class='pstatus busy'>● EM USO</div><div class='info'>👤 <b>Com:</b> {esc(m.get('pessoas'))}<br>📍 <b>Destino:</b> {esc(m.get('destino'))}<br>⌛ <b>Tempo em uso:</b> {duration(m.get('data_hora_saida'))}</div>" if m else "<div class='pstatus free'>● DISPONÍVEL</div>")
+   revtxt='Revisão não cadastrada' if target is None else (f'REVISÃO VENCIDA HÁ {km(abs(left))}' if left<0 else f'FALTAM {km(left)}')
+   panelcards.append(f"<div class='panelcard'><div class='panelmain'><img src='{image(v.get('foto'))}'><div>{status}<div class='plate'>{esc(v.get('placa'))}</div><div class='model'>{esc(v.get('modelo'))}</div><div class='company'>{esc(units_by_plate[v['placa']])}</div><div class='info'>KM atual: <b>{km(v.get('km_atual'))}</b></div></div></div><div class='revbox'>{revtxt}</div>{revision_appointment_banner(v)}</div>")
+  st.markdown("<div class='panelgrid'>"+''.join(panelcards)+"</div>",unsafe_allow_html=True)
+  if not PROTECTED_ACCESS:
+   st.markdown("<meta http-equiv='refresh' content='15'>",unsafe_allow_html=True)
+ fleet_panel()
 
 elif view=='admin':
  top('ADMINISTRAÇÃO DA FROTA')
