@@ -11,11 +11,7 @@ from consumption import render_consumption
 st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
 BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
 @st.cache_resource
-def get_db():
- try:
-  neon_url=st.secrets.get('VEICULOS_NEON_DATABASE_URL')
- except FileNotFoundError:
-  neon_url=None
+def get_db(neon_url=None):
  if neon_url:
   from vehicle_db_neon import NeonVehicles
   return NeonVehicles(neon_url)
@@ -273,13 +269,14 @@ st.markdown('''<style>
 </style>''',unsafe_allow_html=True)
 
 try:
- DB=get_db()
+ neon_url=st.secrets.get('VEICULOS_NEON_DATABASE_URL')
+except FileNotFoundError:
+ neon_url=None
+
+try:
+ DB=get_db(neon_url)
  vs,opened=load()
 except Exception as error:
- try:
-  neon_url=st.secrets.get('VEICULOS_NEON_DATABASE_URL')
- except FileNotFoundError:
-  neon_url=None
  if neon_url and (not isinstance(neon_url,str) or not neon_url.startswith(('postgresql://','postgres://'))):
   st.error('O endereço do Neon em VEICULOS_NEON_DATABASE_URL deve começar com postgresql://.')
  elif neon_url:
