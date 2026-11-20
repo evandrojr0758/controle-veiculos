@@ -1,7 +1,7 @@
 import streamlit as st
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-import base64, html, re
+import base64, html, logging, re
 from urllib.parse import urlencode
 from vehicle_photos import remove_background, photo_bytes, MAX_UPLOAD_BYTES
 from gps_bridge import gps_suggestion
@@ -275,8 +275,20 @@ st.markdown('''<style>
 try:
  DB=get_db()
  vs,opened=load()
-except Exception:
- st.error('Falha ao conectar ao banco online.'); st.stop()
+except Exception as error:
+ try:
+  neon_url=st.secrets.get('VEICULOS_NEON_DATABASE_URL')
+ except FileNotFoundError:
+  neon_url=None
+ if neon_url and (not isinstance(neon_url,str) or not neon_url.startswith(('postgresql://','postgres://'))):
+  st.error('O endereço do Neon em VEICULOS_NEON_DATABASE_URL deve começar com postgresql://.')
+ elif neon_url:
+  st.error('O Neon não abriu a conexão. Confira a URL copiada da branch de veículos, incluindo a senha.')
+ else:
+  st.error('Falha ao conectar ao banco anterior. Configure VEICULOS_NEON_DATABASE_URL nos Secrets do Streamlit.')
+ logging.getLogger(__name__).warning('Conexão do app: origem=%s tipo=%s sqlstate=%s',
+      'neon' if neon_url else 'supabase',type(error).__name__,getattr(error,'sqlstate',None))
+ st.stop()
 q=st.query_params; view=q.get('view','vehicles'); plate=q.get('plate',''); flt=q.get('filter','free'); tab=q.get('tab','revisao')
 all_vs=vs; UNIT=resolve_unit(q,all_vs)
 if q.get('native')=='android' and view=='vehicles' and not q.get('gps_return'):
