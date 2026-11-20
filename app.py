@@ -1,7 +1,6 @@
 import streamlit as st
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from supabase import create_client
 import base64, html, re
 from urllib.parse import urlencode
 from vehicle_photos import remove_background, photo_bytes, MAX_UPLOAD_BYTES
@@ -12,8 +11,16 @@ from consumption import render_consumption
 st.set_page_config(page_title='Controle de Veículos | 10 Sul', page_icon='🚙', layout='centered', initial_sidebar_state='collapsed')
 BASE=Path(__file__).parent; ASSETS=BASE/'assets'; TZ=timezone(timedelta(hours=-3))
 @st.cache_resource
-def get_db(): return create_client(st.secrets['SUPABASE_URL'],st.secrets['SUPABASE_KEY'])
-DB=get_db()
+def get_db():
+ try:
+  neon_url=st.secrets.get('VEICULOS_NEON_DATABASE_URL')
+ except FileNotFoundError:
+  neon_url=None
+ if neon_url:
+  from vehicle_db_neon import NeonVehicles
+  return NeonVehicles(neon_url)
+ from supabase import create_client
+ return create_client(st.secrets['SUPABASE_URL'],st.secrets['SUPABASE_KEY'])
 def esc(x): return html.escape(str(x or ''))
 def km(x):
  if x is None: return 'PENDENTE'
@@ -147,7 +154,7 @@ def register_vehicle(values):
  try:
   result=DB.table('veiculos').insert(values).execute()
  except Exception as error:
-  if str(getattr(error,'code',''))=='23505':
+  if (getattr(error,'sqlstate',None) or getattr(error,'code',None))=='23505':
    raise ValueError('Esta placa já está cadastrada. Atualize a lista de veículos.') from error
   raise
  if not result.data or any(result.data[0].get(key)!=value for key,value in values.items()):
@@ -191,7 +198,7 @@ def editar_km_inicial_em_uso(m,prefixo):
     st.session_state['km_inicial_corrigido']=m['id']
     st.rerun()
   except Exception as e:
-   st.error(getattr(e,'message','Não foi possível corrigir o KM inicial. Atualize a tela e tente novamente.'))
+   st.error(str(e) if isinstance(e,ValueError) else getattr(e,'message','Não foi possível corrigir o KM inicial. Atualize a tela e tente novamente.'))
 
 def setview(view,**kwargs):
  d=route_params(view,UNIT,**kwargs)
@@ -201,7 +208,7 @@ def setview(view,**kwargs):
 def gps_command(action,m):
  params={'native_command':action,'id':str(m['id']),'unidade':UNIT}
  if action=='start': params.update(plate=m['placa'],initial=int(m.get('km_inicial') or 0))
- url='https://controle-veiculos-jpnsn36kukknr96dv9noma.streamlit.app/?'+urlencode(params)
+ url='/?'+urlencode(params)
  label='📍 INICIAR CONTAGEM POR GPS' if action=='start' else '✓ Retorno confirmado'
  st.markdown(f"<a class='action' data-gps-command='{action}' href='{esc(url)}' target='_self'>{label}</a>",unsafe_allow_html=True)
 def top(sub): st.markdown(f"<div class='top'><div class='logo'>🔧</div><div class='brand'>10 SUL<small>CONTROLE DE VEÍCULOS · SERVICE</small></div></div><div class='mode'>{sub} · {esc(UNITS[UNIT])}</div>",unsafe_allow_html=True)
@@ -221,8 +228,17 @@ def confirmar_km_inicial(placa,destino,ocupantes,km_inicial,condutor):
    st.error('Veículo não encontrado. Atualize a tela.'); return
   if revision_usage_blocked(latest[0],km_inicial):
    st.error(REVISION_BLOCK_MESSAGE); return
-  result=DB.table('movimentacoes').insert({'placa':placa,'destino':destino,'pessoas':ocupantes,'condutor':condutor.strip(),'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}).execute()
-  DB.table('veiculos').update({'km_atual':int(km_inicial),'atualizado_em':now()}).eq('placa',placa).execute()
+  trip={'placa':placa,'destino':destino,'pessoas':ocupantes,'condutor':condutor.strip(),'km_inicial':int(km_inicial),'data_hora_saida':now(),'status':'EM USO'}
+  if hasattr(type(DB),'start_trip'):
+   try:
+    result=DB.start_trip(trip,revision_usage_blocked)
+   except ValueError as error:
+    st.error(str(error)); return
+   except Exception:
+    st.error('Não foi possível registrar a saída. Atualize a tela e confira a viagem.'); return
+  else:
+   result=DB.table('movimentacoes').insert(trip).execute()
+   DB.table('veiculos').update({'km_atual':int(km_inicial),'atualizado_em':now()}).eq('placa',placa).execute()
   if st.session_state.get('native_android') and result.data:
    st.session_state['gps_start']=result.data[0]
   setview('vehicles',filter='used')
@@ -236,8 +252,16 @@ def confirmar_km_final(placa,movimentacao_id,km_inicial,km_final):
  st.markdown(f"**KM rodado:** {km(int(km_final)-int(km_inicial))}")
  confirmar,corrigir=st.columns(2)
  if confirmar.button('✅ SIM, REGISTRAR',key='confirmar_km_final',use_container_width=True,type='primary'):
-  DB.table('movimentacoes').update({'km_final':int(km_final),'data_hora_retorno':now(),'status':'DEVOLVIDO'}).eq('id',movimentacao_id).execute()
-  DB.table('veiculos').update({'km_atual':int(km_final),'atualizado_em':now()}).eq('placa',placa).execute()
+  if hasattr(type(DB),'finish_trip'):
+   try:
+    DB.finish_trip(placa,movimentacao_id,int(km_inicial),int(km_final),now())
+   except ValueError as error:
+    st.error(str(error)); return
+   except Exception:
+    st.error('Não foi possível registrar a devolução. Atualize a tela e confira a viagem.'); return
+  else:
+   DB.table('movimentacoes').update({'km_final':int(km_final),'data_hora_retorno':now(),'status':'DEVOLVIDO'}).eq('id',movimentacao_id).execute()
+   DB.table('veiculos').update({'km_atual':int(km_final),'atualizado_em':now()}).eq('placa',placa).execute()
   if st.session_state.get('native_android'): st.session_state['gps_complete']={'id':movimentacao_id}
   setview('vehicles',filter='free')
  if corrigir.button('✏️ NÃO, CORRIGIR',key='corrigir_km_final',use_container_width=True):
@@ -248,8 +272,11 @@ st.markdown('''<style>
 @media(min-width:700px){.block-container{max-width:900px}.pic{height:205px}.panelgrid{grid-template-columns:repeat(2,minmax(0,1fr))}.panelmain{grid-template-columns:125px 1fr}.panelmain img{width:125px;height:95px}.panelcard{padding:11px}}
 </style>''',unsafe_allow_html=True)
 
-try:vs,opened=load()
-except Exception: st.error('Falha ao conectar ao banco online.'); st.stop()
+try:
+ DB=get_db()
+ vs,opened=load()
+except Exception:
+ st.error('Falha ao conectar ao banco online.'); st.stop()
 q=st.query_params; view=q.get('view','vehicles'); plate=q.get('plate',''); flt=q.get('filter','free'); tab=q.get('tab','revisao')
 all_vs=vs; UNIT=resolve_unit(q,all_vs)
 if q.get('native')=='android' and view=='vehicles' and not q.get('gps_return'):
